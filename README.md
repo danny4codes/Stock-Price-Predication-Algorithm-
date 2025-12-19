@@ -7,8 +7,8 @@ price movements of selected NIFTY 50 stocks.
 Technologies Used:
 - Java (Spring Boot)
 - HTML, CSS, JavaScript
-- SQLite / MySQL
-- Hibernate (JPA)
+- MySQL
+- Hibernate
 - SMILE Machine Learning Library
 
 Features:
