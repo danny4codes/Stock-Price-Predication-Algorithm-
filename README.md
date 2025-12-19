@@ -20,3 +20,8 @@ Features:
 
 Note:
 This project is developed for academic purposes.
+
+Author
+Name: Daniel Sajeev
+Class: SYCS A
+Roll Number: 5279
