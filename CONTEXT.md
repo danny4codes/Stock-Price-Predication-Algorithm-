@@ -40,16 +40,14 @@
 | `pyproject.toml`             | ✅ Done     | Pytest configuration                          |
 | `logger_config.py`           | ✅ Done     | Rotating file + console logging               |
 | `data_ingestion.py`          | ✅ Done     | MT5 conn, historical/live data, exp. backoff  |
-| `feature_engineering.py`     | ✅ Done     | ATR, VWAP, Hurst, GARCH, DC, OFI, log returns, vol z-score (NO retail indicators) |
+| `feature_engineering.py`     | ✅ Done     | ATR, VWAP, Hurst, GARCH; delegates DC/OFI/signals to microstructure engine |
+| `2_microstructure_engine.py` | ✅ Done     | **NEW** DC event detection, OFI, primary boolean signal logic |
 | `signal_generation.py`       | ✅ Done     | Regime detect, trend+MR signals, filters      |
 | `machine_learning.py`        | ✅ Done     | Walk-forward CV, train, save/load, infer      |
 | `risk_manager.py`            | ✅ Done     | 1% sizing, 4% DD limit, validation gate       |
-| `execution.py`               | ✅ Done     | Market/limit orders, position management, **execute_signal()** |
+| `execution.py`               | ✅ Done     | Market/limit orders, position management      |
 | `main.py`                    | ✅ Done     | Async trading loop, multi-symbol              |
-| `tests/test_feature_*.py`    | ✅ Done     | 30 unit tests — all passing                   |
-| `tests/test_risk_manager.py` | ✅ Done     | 23 unit tests — all passing                   |
-| `tests/test_signal_*.py`     | ✅ Done     | 26 unit tests — all passing                   |
-| `tests/` (total)             | ✅ 81 passed| **81/81 tests passing**                        |
+| `tests/` (total)             | ✅ 156 passed| **156/156 tests passing** (29 new microstructure tests) |
 | `.venv/`                     | ✅ Done     | Virtual environment created & populated       |
 
 ---
