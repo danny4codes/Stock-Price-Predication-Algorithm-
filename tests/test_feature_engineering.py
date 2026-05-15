@@ -1,4 +1,5 @@
 # tests/test_feature_engineering.py — Unit Tests for feature_engineering.py
+# Updated: Retail indicators removed, only econometric/microstructure features tested
 
 import sys
 from pathlib import Path
@@ -11,14 +12,12 @@ import pytest
 from feature_engineering import (
     build_feature_matrix,
     compute_atr,
-    compute_bollinger_bands,
     compute_hurst_exponent,
     compute_log_returns,
-    compute_macd,
-    compute_price_momentum,
-    compute_rsi,
     compute_vwap,
     fit_garch,
+    DirectionalChangeDetector,
+    calculate_order_flow_imbalance,
 )
 
 
@@ -42,6 +41,23 @@ def make_ohlcv(n: int = 300, seed: int = 42) -> pd.DataFrame:
     )
 
 
+def make_trending_ohlcv(n: int = 1000, seed: int = 42) -> pd.DataFrame:
+    """Generate trending OHLCV data (persistent upward movement)."""
+    rng = np.random.default_rng(seed)
+    trend = np.linspace(0, 0.20, n)
+    noise = rng.normal(0, 0.0002, n)
+    close = 1.1000 + np.cumsum(trend + noise)
+    high = close + rng.uniform(0.0003, 0.0015, n)
+    low = close - rng.uniform(0.0003, 0.0015, n)
+    open_ = close + rng.normal(0, 0.0003, n)
+    volume = rng.integers(100, 10000, n).astype(float)
+    idx = pd.date_range("2024-01-01", periods=n, freq="1h", tz="UTC")
+    return pd.DataFrame(
+        {"open": open_, "high": high, "low": low, "close": close, "volume": volume},
+        index=idx,
+    )
+
+
 @pytest.fixture
 def ohlcv():
     return make_ohlcv()
@@ -52,67 +68,28 @@ def close(ohlcv):
     return ohlcv["close"]
 
 
+@pytest.fixture
+def trending_ohlcv():
+    return make_trending_ohlcv()
+
+
 # ---------------------------------------------------------------------------
-# RSI
+# Log Returns
 # ---------------------------------------------------------------------------
 
-class TestComputeRSI:
+class TestComputeLogReturns:
     def test_returns_series(self, close):
-        result = compute_rsi(close)
+        result = compute_log_returns(close)
         assert isinstance(result, pd.Series)
 
-    def test_same_length(self, close):
-        result = compute_rsi(close)
-        assert len(result) == len(close)
+    def test_first_value_nan(self, close):
+        result = compute_log_returns(close)
+        assert pd.isna(result.iloc[0])
 
-    def test_values_in_range(self, close):
-        result = compute_rsi(close).dropna()
-        assert (result >= 0).all() and (result <= 100).all()
-
-    def test_leading_nans(self, close):
-        result = compute_rsi(close, period=14)
-        assert result.iloc[:13].isna().all()
-
-
-# ---------------------------------------------------------------------------
-# MACD
-# ---------------------------------------------------------------------------
-
-class TestComputeMACD:
-    def test_returns_dataframe(self, close):
-        result = compute_macd(close)
-        assert isinstance(result, pd.DataFrame)
-
-    def test_expected_columns(self, close):
-        result = compute_macd(close)
-        assert set(result.columns) == {"macd", "macd_signal", "macd_diff"}
-
-    def test_same_length(self, close):
-        result = compute_macd(close)
-        assert len(result) == len(close)
-
-
-# ---------------------------------------------------------------------------
-# Bollinger Bands
-# ---------------------------------------------------------------------------
-
-class TestComputeBollingerBands:
-    def test_returns_dataframe(self, close):
-        result = compute_bollinger_bands(close)
-        assert isinstance(result, pd.DataFrame)
-
-    def test_expected_columns(self, close):
-        result = compute_bollinger_bands(close)
-        assert {"bb_upper", "bb_mid", "bb_lower", "bb_width", "bb_pct"} == set(result.columns)
-
-    def test_upper_above_lower(self, close):
-        result = compute_bollinger_bands(close).dropna()
-        assert (result["bb_upper"] >= result["bb_lower"]).all()
-
-    def test_mid_between_bands(self, close):
-        result = compute_bollinger_bands(close).dropna()
-        assert (result["bb_mid"] >= result["bb_lower"]).all()
-        assert (result["bb_mid"] <= result["bb_upper"]).all()
+    def test_correct_formula(self, close):
+        result = compute_log_returns(close)
+        expected = np.log(close.iloc[1] / close.iloc[0])
+        assert abs(result.iloc[1] - expected) < 1e-10
 
 
 # ---------------------------------------------------------------------------
@@ -148,25 +125,6 @@ class TestComputeVWAP:
 
 
 # ---------------------------------------------------------------------------
-# Log Returns
-# ---------------------------------------------------------------------------
-
-class TestComputeLogReturns:
-    def test_returns_series(self, close):
-        result = compute_log_returns(close)
-        assert isinstance(result, pd.Series)
-
-    def test_first_value_nan(self, close):
-        result = compute_log_returns(close)
-        assert pd.isna(result.iloc[0])
-
-    def test_correct_formula(self, close):
-        result = compute_log_returns(close)
-        expected = np.log(close.iloc[1] / close.iloc[0])
-        assert abs(result.iloc[1] - expected) < 1e-10
-
-
-# ---------------------------------------------------------------------------
 # Hurst Exponent
 # ---------------------------------------------------------------------------
 
@@ -183,6 +141,11 @@ class TestComputeHurstExponent:
         tiny = pd.Series([1.0, 1.1, 1.2, 1.1])
         result = compute_hurst_exponent(tiny, max_lag=100)
         assert result == 0.5
+
+    def test_trending_data_positive_hurst(self, trending_ohlcv):
+        """Trending data should yield Hurst > 0.5."""
+        result = compute_hurst_exponent(trending_ohlcv["close"])
+        assert result > 0.5
 
 
 # ---------------------------------------------------------------------------
@@ -208,17 +171,70 @@ class TestFitGARCH:
 
 
 # ---------------------------------------------------------------------------
-# Price Momentum
+# Directional Change Detector
 # ---------------------------------------------------------------------------
 
-class TestComputePriceMomentum:
-    def test_returns_dataframe(self, close):
-        result = compute_price_momentum(close, [5, 10, 20])
-        assert isinstance(result, pd.DataFrame)
+class TestDirectionalChangeDetector:
+    def test_initialization(self):
+        detector = DirectionalChangeDetector(theta=0.001)
+        assert detector.theta == 0.001
+        assert detector.last_extremum_price is None
 
-    def test_correct_columns(self, close):
-        result = compute_price_momentum(close, [5, 10, 20])
-        assert set(result.columns) == {"mom_5", "mom_10", "mom_20"}
+    def test_first_tick_no_event(self):
+        detector = DirectionalChangeDetector(theta=0.001)
+        result = detector.process_tick(1.1000, 1000, None)
+        assert result["event_type"] is None
+        assert result["price"] == 1.1000
+
+    def test_upturn_event(self):
+        detector = DirectionalChangeDetector(theta=0.01)
+        # Start at 1.1000, need price > 1.1000 * 1.01 = 1.111 to trigger upturn
+        detector.process_tick(1.1000, 1000, None)  # init
+        result = detector.process_tick(1.1200, 1500, None)
+        assert result["event_type"] == "upturn"
+        assert result["signal_strength"] > 0
+
+    def test_downturn_event(self):
+        detector = DirectionalChangeDetector(theta=0.01)
+        detector.process_tick(1.1000, 1000, None)  # init as min
+        detector.process_tick(1.1200, 1000, None)  # upturn (1.12 > 1.111), now max at 1.12
+        result = detector.process_tick(1.1000, 1500, None)  # drop > 1% from max → downturn
+        assert result["event_type"] == "downturn"
+
+    def test_new_minimum_update(self):
+        detector = DirectionalChangeDetector(theta=0.01)
+        detector.process_tick(1.1000, 1000, None)
+        result = detector.process_tick(1.0900, 1000, None)  # New lower min
+        assert result["event_type"] is None
+        assert detector.last_extremum_price == 1.0900
+
+
+# ---------------------------------------------------------------------------
+# Order Flow Imbalance
+# ---------------------------------------------------------------------------
+
+class TestOrderFlowImbalance:
+    def test_up_ticks_positive_ofi(self):
+        prices = pd.Series([1.0, 1.01, 1.02, 1.03])
+        volumes = pd.Series([100, 100, 100, 100])
+        result = calculate_order_flow_imbalance(prices, volumes, window=3)
+        assert result.iloc[-1] > 0  # Upward ticks → positive OFI
+
+    def test_down_ticks_negative_ofi(self):
+        prices = pd.Series([1.03, 1.02, 1.01, 1.0])
+        volumes = pd.Series([100, 100, 100, 100])
+        result = calculate_order_flow_imbalance(prices, volumes, window=3)
+        assert result.iloc[-1] < 0  # Downward ticks → negative OFI
+
+    def test_mixed_ticks_near_zero(self):
+        prices = pd.Series([1.0, 1.01, 1.0, 1.01, 1.0])
+        volumes = pd.Series([100, 100, 100, 100, 100])
+        result = calculate_order_flow_imbalance(prices, volumes, window=5)
+        assert abs(result.iloc[-1]) < 0.5  # Mixed → near zero
+
+    def test_length_mismatch_raises(self):
+        with pytest.raises(ValueError):
+            calculate_order_flow_imbalance(pd.Series([1, 2, 3]), pd.Series([1, 2]))
 
 
 # ---------------------------------------------------------------------------
@@ -249,5 +265,15 @@ class TestBuildFeatureMatrix:
 
     def test_expected_key_columns_present(self, ohlcv):
         result = build_feature_matrix(ohlcv)
-        expected = {"rsi", "macd", "bb_pct", "atr", "adx", "log_return"}
+        expected = {"log_return", "atr", "hurst", "garch_vol", "ofi", "dc_signal_strength"}
         assert expected.issubset(set(result.columns))
+
+    def test_no_retail_indicators(self, ohlcv):
+        """Verify prohibited indicators are absent."""
+        result = build_feature_matrix(ohlcv)
+        prohibited = {"rsi", "macd", "macd_signal", "macd_diff", "ema_20",
+                       "ema_50", "ema_200", "ema_cross", "adx", "adx_pos",
+                       "adx_neg", "bb_upper", "bb_mid", "bb_lower", "bb_width",
+                       "bb_pct", "stoch_k", "stoch_d"}
+        present = prohibited & set(result.columns)
+        assert len(present) == 0, f"Prohibited indicators found: {present}"

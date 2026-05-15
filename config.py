@@ -64,19 +64,33 @@ ML_MODEL_TYPE           = "random_forest"  # Options: "random_forest", "gradient
 ML_TEST_SIZE_RATIO      = 0.2     # Ratio of data reserved for final test set
 
 # ===========================================================================
-# FEATURE ENGINEERING PARAMETERS
+# FEATURE ENGINEERING PARAMETERS — Econometric & Microstructure Only
 # ===========================================================================
-RSI_PERIOD              = 14
-MACD_FAST               = 12
-MACD_SLOW               = 26
-MACD_SIGNAL             = 9
-BOLLINGER_PERIOD        = 20
-BOLLINGER_STD           = 2.0
-ATR_PERIOD              = 14
-HURST_MIN_LAG           = 2
-HURST_MAX_LAG           = 100
-GARCH_P                 = 1
-GARCH_Q                 = 1
+# RETAIL INDICATORS PROHIBITED: No SMA/EMA crossover, RSI, MACD, ADX,
+# Bollinger Bands, or Stochastic oscillators anywhere in the pipeline.
+
+ATR_PERIOD              = 14      # ATR lookback — used for SL/TP sizing only
+HURST_MIN_LAG           = 2       # Min lag for R/S Hurst analysis
+HURST_MAX_LAG           = 100     # Max lag for R/S Hurst analysis
+HURST_ROLLING_WINDOW    = 100     # Rolling window for Hurst computation
+GARCH_P                 = 1       # GARCH lag order for past variances
+GARCH_Q                 = 1       # ARCH lag order for past residuals
+GARCH_ROLLING_WINDOW    = 100     # Rolling window for GARCH volatility
+
+# Directional Changes (DC) parameters
+DC_THETA                = 0.001   # Threshold for significant price movement (0.1%)
+DC_MIN_PRICE            = 0.0001  # Min price for DC detection
+
+# Order Flow Imbalance (OFI) parameters
+OFI_WINDOW              = 20      # Rolling window for OFI smoothing
+OFI_THRESHOLD           = 0.1     # Min |OFI| magnitude to confirm signal
+
+# Volatility Z-Score for mean-reversion entry
+VOL_ZSCORE_WINDOW       = 50      # Window for GARCH vol z-score calc
+VOL_ZSCORE_THRESHOLD    = 1.0     # Z-score threshold for vol spike
+
+# VWAP deviation for mean-reversion entry
+VWAP_DIST_THRESHOLD     = 0.001   # Min |price - VWAP| / VWAP for MR entry
 
 # ===========================================================================
 # REGIME DETECTION THRESHOLDS (Hurst Exponent)
@@ -84,6 +98,19 @@ GARCH_Q                 = 1
 HURST_TRENDING_THRESHOLD      = 0.55   # H > 0.55 → trending
 HURST_MEAN_REVERT_THRESHOLD   = 0.45   # H < 0.45 → mean reverting
 # H between 0.45 and 0.55 → random walk (no trade)
+
+# ===========================================================================
+# SIGNAL GENERATION THRESHOLDS
+# ===========================================================================
+MIN_SIGNAL_CONFIDENCE        = 0.30   # Minimum combined confidence to trade
+CONFIDENCE_THRESHOLD         = 0.25   # Minimum confidence at final filter gate
+MIN_RISK_REWARD_RATIO        = 1.5    # Minimum R:R ratio for signal approval
+
+# ATR Multipliers for stop-loss / take-profit sizing
+TREND_SL_ATR                = 1.5    # Trend SL = ATR × this
+TREND_TP_ATR                = 3.0    # Trend TP = ATR × this
+MR_SL_ATR                   = 1.0    # Mean-reversion SL = ATR × this
+MR_TP_ATR                   = 1.5    # Mean-reversion TP = ATR × this
 
 # ===========================================================================
 # LOGGING

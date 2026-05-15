@@ -1,18 +1,38 @@
-# signal_generation.py — QuantEdge MT5: Entry/Exit Signal Logic
+# signal_generation.py — QuantEdge MT5: Entry/Exit Signal Logic (Econometric & Microstructure)
 # RULES:
 #   - No ML models here — pure rule-based logic only
+#   - NO retail indicators (RSI, MACD, ADX, Bollinger Bands, Stochastic, EMA crossovers)
 #   - All signals must pass apply_signal_filters() before being acted on
 #   - Returns Signal TypedDict or None (never raises)
+#
+# PERMITTED SIGNAL SOURCES:
+#   - Hurst Exponent (regime detection)
+#   - GARCH conditional volatility (volatility spikes / mean reversion)
+#   - Directional Changes (DC) — microstructure event detection
+#   - Order Flow Imbalance (OFI) — microstructure order flow proxy
+#   - VWAP deviation (fair-value mean reversion)
 
 from datetime import datetime
 from typing import Optional, TypedDict
 
+import numpy as np
 import pandas as pd
 import pytz
 
 from config import (
+    CONFIDENCE_THRESHOLD,
+    DC_THETA,
     HURST_MEAN_REVERT_THRESHOLD,
     HURST_TRENDING_THRESHOLD,
+    MIN_RISK_REWARD_RATIO,
+    MIN_SIGNAL_CONFIDENCE,
+    MR_SL_ATR,
+    MR_TP_ATR,
+    OFI_THRESHOLD,
+    TREND_SL_ATR,
+    TREND_TP_ATR,
+    VWAP_DIST_THRESHOLD,
+    VOL_ZSCORE_THRESHOLD,
 )
 from logger_config import setup_logger
 
@@ -51,7 +71,7 @@ def _null_signal(symbol: str, regime: str = "random") -> Signal:
 
 
 # ---------------------------------------------------------------------------
-# Regime Detection
+# Regime Detection (Hurst Exponent)
 # ---------------------------------------------------------------------------
 
 def detect_market_regime(hurst: float) -> str:
@@ -75,61 +95,77 @@ def detect_market_regime(hurst: float) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Trend Signal (uses ADX + EMA crossover + MACD)
+# Trend Signal — Microstructure (DC + OFI in trending regime)
 # ---------------------------------------------------------------------------
 
 def generate_trend_signal(
     features: pd.DataFrame,
     symbol: str,
-    atr_sl_multiplier: float = 1.5,
-    atr_tp_multiplier: float = 3.0,
+    atr_sl_multiplier: float = TREND_SL_ATR,
+    atr_tp_multiplier: float = TREND_TP_ATR,
 ) -> Signal:
     """
-    Generate a trend-following signal based on:
-        - EMA crossover (20 > 50 = bullish bias)
-        - MACD histogram direction
-        - ADX > 25 (trend is strong enough)
-        - RSI not overbought/oversold at entry
+    Generate a trend-following signal based on microstructure:
+        - Directional Change (DC) upturn/downturn event present
+        - Order Flow Imbalance (OFI) confirming direction
+        - Hurst exponent > 0.55 (trending regime)
 
     Args:
         features:           Feature DataFrame from build_feature_matrix().
         symbol:             Trading symbol (for logging).
-        atr_sl_multiplier:  SL = entry ± (ATR × multiplier). Default: 1.5.
-        atr_tp_multiplier:  TP = entry ± (ATR × multiplier). Default: 3.0.
+        atr_sl_multiplier:  SL = entry - (ATR × multiplier).
+        atr_tp_multiplier:  TP = entry + (ATR × multiplier).
 
     Returns:
         Signal dict. direction=0 if no valid trend signal.
     """
+    if features.empty:
+        logger.debug(f"[{symbol}] Empty features in generate_trend_signal.")
+        return _null_signal(symbol, "trending")
+
     try:
-        row = features.iloc[-1]  # Latest completed bar
+        row = features.iloc[-1]
         entry = row["close"]
-        atr   = row.get("atr", 0.0)
+        atr = row.get("atr", 0.0)
+        dc_event = row.get("dc_event")
+        ofi = row.get("ofi", 0.0)
+        hurst = row.get("hurst", 0.5)
 
-        # --- Trend Conditions ---
-        ema_cross    = row.get("ema_cross", 0)          # ema_20 - ema_50
-        macd_diff    = row.get("macd_diff", 0)          # MACD histogram
-        adx          = row.get("adx", 0)
-        rsi          = row.get("rsi", 50)
+        # Must be in a trending regime
+        if hurst <= HURST_TRENDING_THRESHOLD:
+            logger.debug(f"[{symbol}] Not trending (H={hurst:.3f}). No trend signal.")
+            return _null_signal(symbol, "trending")
 
-        trend_strong = adx > 25
-        rsi_ok_long  = rsi < 70  # Not overbought for long
-        rsi_ok_short = rsi > 30  # Not oversold for short
+        # Must have a valid DC event
+        if dc_event is None:
+            logger.debug(f"[{symbol}] No DC event. No trend signal.")
+            return _null_signal(symbol, "trending")
 
-        if trend_strong and ema_cross > 0 and macd_diff > 0 and rsi_ok_long:
-            direction = 1   # LONG
+        direction = 0
+
+        # LONG: upturn DC + positive OFI
+        if dc_event == "upturn" and ofi > OFI_THRESHOLD:
+            direction = 1
             sl = entry - (atr * atr_sl_multiplier)
             tp = entry + (atr * atr_tp_multiplier)
-            confidence = _trend_confidence(adx, abs(ema_cross) / entry, rsi)
 
-        elif trend_strong and ema_cross < 0 and macd_diff < 0 and rsi_ok_short:
-            direction = -1  # SHORT
+        # SHORT: downturn DC + negative OFI
+        elif dc_event == "downturn" and ofi < -OFI_THRESHOLD:
+            direction = -1
             sl = entry + (atr * atr_sl_multiplier)
             tp = entry - (atr * atr_tp_multiplier)
-            confidence = _trend_confidence(adx, abs(ema_cross) / entry, rsi)
 
-        else:
-            logger.debug(f"[{symbol}] No trend signal. ADX:{adx:.1f} EMA_X:{ema_cross:.5f} MACD:{macd_diff:.5f}")
+        if direction == 0:
+            logger.debug(
+                f"[{symbol}] DC={dc_event} OFI={ofi:.4f} — no trend signal."
+            )
             return _null_signal(symbol, "trending")
+
+        # Compute confidence from OFI magnitude and Hurst strength
+        ofi_magnitude = min(abs(ofi), 1.0)
+        hurst_strength = min((hurst - 0.5) * 2, 1.0)  # Scale 0.5-1.0 → 0-1
+        confidence = round((ofi_magnitude * 0.5 + hurst_strength * 0.5), 3)
+        confidence = max(MIN_SIGNAL_CONFIDENCE, confidence)
 
         signal = Signal(
             symbol=symbol, direction=direction, confidence=confidence,
@@ -138,7 +174,8 @@ def generate_trend_signal(
         )
         logger.info(
             f"[{symbol}] TREND signal: {'LONG' if direction == 1 else 'SHORT'} | "
-            f"Confidence: {confidence:.2f} | Entry: {entry:.5f} | SL: {sl:.5f} | TP: {tp:.5f}"
+            f"Conf: {confidence:.2f} | DC: {dc_event} | OFI: {ofi:.4f} | "
+            f"Hurst: {hurst:.3f} | Entry: {entry:.5f} | SL: {sl:.5f} | TP: {tp:.5f}"
         )
         return signal
 
@@ -147,69 +184,86 @@ def generate_trend_signal(
         return _null_signal(symbol)
 
 
-def _trend_confidence(adx: float, ema_cross_norm: float, rsi: float) -> float:
-    """Score trend signal confidence 0.0–1.0 from ADX, EMA cross strength, RSI neutrality."""
-    adx_score     = min(adx / 50.0, 1.0)             # 50+ ADX = max score
-    cross_score   = min(ema_cross_norm * 1000, 1.0)  # Normalize EMA cross
-    rsi_distance  = abs(rsi - 50) / 50.0              # 0 at neutral, 1 at extremes
-    rsi_score     = 1.0 - rsi_distance                # Better signal when RSI is neutral
-    return round((adx_score * 0.5 + cross_score * 0.3 + rsi_score * 0.2), 3)
+def _trend_confidence(ofi_magnitude: float, hurst: float) -> float:
+    """Score trend signal confidence 0.0–1.0 from OFI and Hurst."""
+    ofi_score = min(ofi_magnitude, 1.0)
+    hurst_score = min((hurst - 0.5) * 2, 1.0)
+    return round((ofi_score * 0.5 + hurst_score * 0.5), 3)
 
 
 # ---------------------------------------------------------------------------
-# Mean Reversion Signal (uses Bollinger Bands + RSI + Stochastic)
+# Mean Reversion Signal — Volatility & VWAP Based
 # ---------------------------------------------------------------------------
 
 def generate_mean_reversion_signal(
     features: pd.DataFrame,
     symbol: str,
-    atr_sl_multiplier: float = 1.0,
-    atr_tp_multiplier: float = 1.5,
+    atr_sl_multiplier: float = MR_SL_ATR,
+    atr_tp_multiplier: float = MR_TP_ATR,
 ) -> Signal:
     """
     Generate a mean-reversion signal based on:
-        - Price outside Bollinger Bands (bb_pct < 0.05 or > 0.95)
-        - RSI oversold (< 30) or overbought (> 70)
-        - Stochastic confirmation
+        - GARCH volatility spike (vol_zscore exceeds threshold)
+        - Price deviating from VWAP beyond threshold
+        - Hurst exponent < 0.45 (mean-reverting regime)
 
     Args:
         features:           Feature DataFrame from build_feature_matrix().
         symbol:             Trading symbol.
-        atr_sl_multiplier:  SL distance = ATR × multiplier. Default: 1.0.
-        atr_tp_multiplier:  TP distance = ATR × multiplier. Default: 1.5.
+        atr_sl_multiplier:  SL distance = ATR × multiplier.
+        atr_tp_multiplier:  TP distance = ATR × multiplier.
 
     Returns:
         Signal dict. direction=0 if no valid MR signal.
     """
+    if features.empty:
+        logger.debug(f"[{symbol}] Empty features in generate_mean_reversion_signal.")
+        return _null_signal(symbol, "mean_reverting")
+
     try:
-        row   = features.iloc[-1]
+        row = features.iloc[-1]
         entry = row["close"]
-        atr   = row.get("atr", 0.0)
+        atr = row.get("atr", 0.0)
+        hurst = row.get("hurst", 0.5)
+        vol_zscore = row.get("vol_zscore", 0.0)
+        vwap = row.get("vwap", 0.0)
+        vwap_dist = row.get("vwap_dist", 0.0)
 
-        bb_pct   = row.get("bb_pct", 0.5)
-        rsi      = row.get("rsi", 50)
-        stoch_k  = row.get("stoch_k", 50)
-        stoch_d  = row.get("stoch_d", 50)
+        # Must be in a mean-reverting regime
+        if hurst >= HURST_MEAN_REVERT_THRESHOLD:
+            logger.debug(f"[{symbol}] Not mean-reverting (H={hurst:.3f}). No MR signal.")
+            return _null_signal(symbol, "mean_reverting")
 
-        # Long: price below lower band, RSI oversold, stochastic crossing up
-        if bb_pct < 0.05 and rsi < 32 and stoch_k < 25 and stoch_k > stoch_d:
-            direction  = 1
-            sl         = entry - (atr * atr_sl_multiplier)
-            tp         = row.get("bb_mid", entry + atr * atr_tp_multiplier)
-            confidence = _mr_confidence(bb_pct, rsi, stoch_k, side="long")
+        direction = 0
 
-        # Short: price above upper band, RSI overbought, stochastic crossing down
-        elif bb_pct > 0.95 and rsi > 68 and stoch_k > 75 and stoch_k < stoch_d:
-            direction  = -1
-            sl         = entry + (atr * atr_sl_multiplier)
-            tp         = row.get("bb_mid", entry - atr * atr_tp_multiplier)
-            confidence = _mr_confidence(bb_pct, rsi, stoch_k, side="short")
+        # LONG: price significantly below VWAP + high vol (oversold conditions)
+        if vwap > 0 and vwap_dist < -VWAP_DIST_THRESHOLD and vol_zscore > VOL_ZSCORE_THRESHOLD:
+            direction = 1
+            sl = entry - (atr * atr_sl_multiplier)
+            tp = vwap  # Target: revert back to VWAP
+            if tp <= sl:
+                tp = entry + (atr * atr_tp_multiplier)
 
-        else:
+        # SHORT: price significantly above VWAP + high vol (overbought conditions)
+        elif vwap > 0 and vwap_dist > VWAP_DIST_THRESHOLD and vol_zscore > VOL_ZSCORE_THRESHOLD:
+            direction = -1
+            sl = entry + (atr * atr_sl_multiplier)
+            tp = vwap  # Target: revert back to VWAP
+            if tp >= sl:
+                tp = entry - (atr * atr_tp_multiplier)
+
+        if direction == 0:
             logger.debug(
-                f"[{symbol}] No MR signal. bb_pct:{bb_pct:.2f} RSI:{rsi:.1f} StochK:{stoch_k:.1f}"
+                f"[{symbol}] H={hurst:.3f} VZ={vol_zscore:.2f} VWAP_D={vwap_dist:.4f} — no MR signal."
             )
             return _null_signal(symbol, "mean_reverting")
+
+        # Compute confidence from z-score magnitude and VWAP distance
+        z_score_conf = min(abs(vol_zscore) / (VOL_ZSCORE_THRESHOLD * 2), 1.0)
+        vwap_conf = min(abs(vwap_dist) / (VWAP_DIST_THRESHOLD * 3), 1.0)
+        hurst_conf = 1.0 - min(hurst * 2, 1.0)  # Lower Hurst = higher MR confidence
+        confidence = round((z_score_conf * 0.4 + vwap_conf * 0.3 + hurst_conf * 0.3), 3)
+        confidence = max(MIN_SIGNAL_CONFIDENCE, confidence)
 
         signal = Signal(
             symbol=symbol, direction=direction, confidence=confidence,
@@ -218,7 +272,8 @@ def generate_mean_reversion_signal(
         )
         logger.info(
             f"[{symbol}] MR signal: {'LONG' if direction == 1 else 'SHORT'} | "
-            f"Confidence: {confidence:.2f} | BB%: {bb_pct:.2f} | RSI: {rsi:.1f}"
+            f"Conf: {confidence:.2f} | VolZ: {vol_zscore:.2f} | VWAP_D: {vwap_dist:.4f} | "
+            f"Hurst: {hurst:.3f} | Entry: {entry:.5f} | SL: {sl:.5f} | TP: {tp:.5f}"
         )
         return signal
 
@@ -227,17 +282,12 @@ def generate_mean_reversion_signal(
         return _null_signal(symbol)
 
 
-def _mr_confidence(bb_pct: float, rsi: float, stoch_k: float, side: str) -> float:
+def _mr_confidence(vol_zscore: float, vwap_dist: float, hurst: float) -> float:
     """Score mean-reversion confidence 0.0–1.0."""
-    if side == "long":
-        bb_score    = max(0, (0.05 - bb_pct) / 0.05)   # Further below band = better
-        rsi_score   = max(0, (35 - rsi) / 35)           # Lower RSI = better
-        stoch_score = max(0, (30 - stoch_k) / 30)
-    else:
-        bb_score    = max(0, (bb_pct - 0.95) / 0.05)
-        rsi_score   = max(0, (rsi - 65) / 35)
-        stoch_score = max(0, (stoch_k - 70) / 30)
-    return round((bb_score * 0.4 + rsi_score * 0.35 + stoch_score * 0.25), 3)
+    z_conf = min(abs(vol_zscore) / (VOL_ZSCORE_THRESHOLD * 2), 1.0)
+    vwap_conf = min(abs(vwap_dist) / (VWAP_DIST_THRESHOLD * 3), 1.0)
+    h_conf = 1.0 - min(hurst * 2, 1.0)
+    return round((z_conf * 0.4 + vwap_conf * 0.3 + h_conf * 0.3), 3)
 
 
 # ---------------------------------------------------------------------------
@@ -254,8 +304,8 @@ def combine_signals(
     Combine trend and mean-reversion signals based on current market regime.
 
     Strategy:
-        - "trending"       → use trend_sig if confidence > 0.3
-        - "mean_reverting" → use mr_sig if confidence > 0.3
+        - "trending"       → use trend_sig if confidence > MIN_SIGNAL_CONFIDENCE
+        - "mean_reverting" → use mr_sig if confidence > MIN_SIGNAL_CONFIDENCE
         - "random"         → return null signal (no trade)
 
     ML confidence acts as a multiplier: final_conf = signal_conf × (1 + ml_conf) / 2
@@ -269,29 +319,26 @@ def combine_signals(
     Returns:
         The selected Signal, or null signal if no clear edge.
     """
-    MIN_CONFIDENCE = 0.30
-
     if regime == "trending":
         base = trend_sig
     elif regime == "mean_reverting":
         base = mr_sig
     else:
         logger.debug("Random walk regime — no signal generated.")
-        return _null_signal(trend_sig["symbol"], "random")
+        return _null_signal(trend_sig["symbol"] if trend_sig else "UNKNOWN", "random")
 
     if base["direction"] == 0:
         return base
 
     # Blend with ML confidence
     blended_conf = (base["confidence"] + ml_confidence) / 2
-    if blended_conf < MIN_CONFIDENCE:
+    if blended_conf < MIN_SIGNAL_CONFIDENCE:
         logger.info(
             f"[{base['symbol']}] Signal filtered: combined confidence {blended_conf:.2f} "
-            f"< threshold {MIN_CONFIDENCE}."
+            f"< threshold {MIN_SIGNAL_CONFIDENCE}."
         )
         return _null_signal(base["symbol"], regime)
 
-    # Return updated signal with blended confidence
     return Signal(**{**base, "confidence": round(blended_conf, 3)})
 
 
@@ -306,9 +353,9 @@ def apply_signal_filters(
     Checks:
         1. Signal direction is not FLAT (direction != 0)
         2. Valid entry, SL, TP prices
-        3. Risk/reward ratio ≥ 1.5
+        3. Risk/reward ratio ≥ MIN_RISK_REWARD_RATIO
         4. Account info is valid
-        5. Minimum confidence threshold
+        5. Minimum confidence threshold (CONFIDENCE_THRESHOLD)
 
     Args:
         signal:               Signal from combine_signals().
@@ -336,9 +383,9 @@ def apply_signal_filters(
         logger.warning(f"[{sym}] Signal rejected: zero SL distance.")
         return None
     rr_ratio = tp_dist / sl_dist
-    if rr_ratio < 1.5:
+    if rr_ratio < MIN_RISK_REWARD_RATIO:
         logger.warning(
-            f"[{sym}] Signal rejected: R:R {rr_ratio:.2f} < 1.5 minimum."
+            f"[{sym}] Signal rejected: R:R {rr_ratio:.2f} < {MIN_RISK_REWARD_RATIO} minimum."
         )
         return None
 
@@ -348,8 +395,8 @@ def apply_signal_filters(
         return None
 
     # 5. Minimum confidence
-    if signal["confidence"] < 0.25:
-        logger.info(f"[{sym}] Signal rejected: confidence {signal['confidence']:.2f} < 0.25.")
+    if signal["confidence"] < CONFIDENCE_THRESHOLD:
+        logger.info(f"[{sym}] Signal rejected: confidence {signal['confidence']:.2f} < {CONFIDENCE_THRESHOLD}.")
         return None
 
     logger.info(

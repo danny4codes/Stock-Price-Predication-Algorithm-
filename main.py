@@ -134,7 +134,7 @@ async def process_symbol(
     approved      = apply_signal_filters(final_signal, account_info, open_count)
 
     if approved:
-        result = execute_signal(approved)
+        result = execute_signal(approved, account_info)
         if not result.get("success"):
             logger.warning(f"[{symbol}] Execution failed: {result.get('error')}")
     else:

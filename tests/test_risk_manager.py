@@ -160,11 +160,9 @@ class TestValidateOrder:
     def setup_method(self):
         reset_daily_session(10000.0)
 
-    @patch("risk_manager.mt5")
-    def test_valid_long_order_passes(self, mock_mt5, sample_account, sample_symbol_info):
-        mock_tick = MagicMock()
-        mock_tick.ask = 1.10050
-        mock_mt5.symbol_info_tick.return_value = mock_tick
+    @patch("risk_manager._get_current_price")
+    def test_valid_long_order_passes(self, mock_get_price, sample_account, sample_symbol_info):
+        mock_get_price.return_value = 1.10050
 
         result = validate_order(
             symbol="EURUSD",
@@ -176,8 +174,8 @@ class TestValidateOrder:
         )
         assert result is True
 
-    @patch("risk_manager.mt5")
-    def test_invalid_direction_fails(self, mock_mt5, sample_account, sample_symbol_info):
+    @patch("risk_manager._get_current_price")
+    def test_invalid_direction_fails(self, mock_get_price, sample_account, sample_symbol_info):
         result = validate_order(
             symbol="EURUSD",
             direction=0,  # FLAT — invalid
@@ -188,8 +186,8 @@ class TestValidateOrder:
         )
         assert result is False
 
-    @patch("risk_manager.mt5")
-    def test_no_stop_loss_fails(self, mock_mt5, sample_account, sample_symbol_info):
+    @patch("risk_manager._get_current_price")
+    def test_no_stop_loss_fails(self, mock_get_price, sample_account, sample_symbol_info):
         result = validate_order(
             symbol="EURUSD",
             direction=1,
@@ -200,8 +198,8 @@ class TestValidateOrder:
         )
         assert result is False
 
-    @patch("risk_manager.mt5")
-    def test_drawdown_limit_blocks_order(self, mock_mt5, sample_account, sample_symbol_info):
+    @patch("risk_manager._get_current_price")
+    def test_drawdown_limit_blocks_order(self, mock_get_price, sample_account, sample_symbol_info):
         reset_daily_session(10000.0)
         sample_account_dd = {**sample_account, "equity": 9500.0}  # 5% DD
 
@@ -215,11 +213,9 @@ class TestValidateOrder:
         )
         assert result is False
 
-    @patch("risk_manager.mt5")
-    def test_position_limit_blocks_order(self, mock_mt5, sample_account, sample_symbol_info):
-        mock_tick = MagicMock()
-        mock_tick.ask = 1.10050
-        mock_mt5.symbol_info_tick.return_value = mock_tick
+    @patch("risk_manager._get_current_price")
+    def test_position_limit_blocks_order(self, mock_get_price, sample_account, sample_symbol_info):
+        mock_get_price.return_value = 1.10050
 
         result = validate_order(
             symbol="EURUSD",

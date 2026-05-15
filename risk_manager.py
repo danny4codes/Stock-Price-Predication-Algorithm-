@@ -1,14 +1,14 @@
 # risk_manager.py — QuantEdge MT5: Position Sizing & Drawdown Enforcement
 # RULES:
 #   - Risk percentages are HARDCODED — never changed without explicit user approval
-#   - Every order MUST be validated here before mt5.order_send()
+#   - Every order MUST be validated here before mt5.order_send() (in data_ingestion)
+#   - All MT5 calls routed through data_ingestion.py — NO direct MetaTrader5 import
 #   - Returns False = system blocks the trade, no exceptions
 
 from datetime import date
 from typing import Optional
 
-import MetaTrader5 as mt5
-
+from data_ingestion import get_current_price as _get_current_price
 from config import (
     MAX_CONCURRENT_POSITIONS,
     MAX_DAILY_DRAWDOWN_PCT,
@@ -64,14 +64,11 @@ def calculate_position_size(
     Returns:
         Lot size rounded to symbol's volume step. Returns 0.0 if invalid.
     """
-    # HARDCODED — do not parameterize
-    MAX_RISK_PCT = RISK_PER_TRADE_PCT  # 0.01 = 1%
-
     if stop_loss_pips <= 0:
         logger.error(f"Invalid stop_loss_pips: {stop_loss_pips}. Cannot size position.")
         return 0.0
 
-    risk_amount  = account_balance * MAX_RISK_PCT
+    risk_amount  = account_balance * RISK_PER_TRADE_PCT
     pip_value    = symbol_info.get("trade_tick_value", 0.0)
     tick_size    = symbol_info.get("trade_tick_size", 0.0)
     point        = symbol_info.get("point", 0.0)
@@ -80,16 +77,13 @@ def calculate_position_size(
         logger.error(f"Invalid symbol info for sizing: pip_value={pip_value}, point={point}")
         return 0.0
 
-    # Convert pips to price distance
-    price_distance = stop_loss_pips * point * 10  # 1 pip = 10 points for 5-digit brokers
+    price_distance = stop_loss_pips * point * 10
     lots_raw = risk_amount / (price_distance / tick_size * pip_value)
 
-    # Clamp to symbol volume limits
     vol_min  = symbol_info.get("volume_min", 0.01)
     vol_max  = symbol_info.get("volume_max", 100.0)
     vol_step = symbol_info.get("volume_step", 0.01)
 
-    # Round to nearest volume step
     lots = round(round(lots_raw / vol_step) * vol_step, 2)
     lots = max(vol_min, min(vol_max, lots))
 
@@ -255,9 +249,8 @@ def validate_order(
         return False
 
     # 5. Minimum stop loss distance (1 pip)
-    tick = mt5.symbol_info_tick(symbol)
-    if tick:
-        current_price = tick.ask if direction == 1 else tick.bid
+    current_price = _get_current_price(symbol, direction)
+    if current_price is not None:
         point = symbol_info.get("point", 0.00001)
         sl_distance_pips = abs(current_price - stop_loss) / (point * 10)
         if sl_distance_pips < 1.0:

@@ -471,7 +471,21 @@ python main.py
 
 ---
 
-## 9. AI Agent Instructions
+## 5. STRICT PROHIBITIONS
+
+> **These rules are ABSOLUTE. Violations will be rejected at code review.**
+
+| Rule | Enforcement |
+|------|-------------|
+| **NEVER** implement or import retail technical indicators such as Moving Averages (SMA/EMA), RSI, MACD, ADX, or Bollinger Bands. | Architecture review — blocked on merge. |
+| **ALWAYS** strictly rely on the econometric and microstructure models defined: **Hurst Exponent**, **GARCH(1,1)**, **Directional Changes (DC)**, and **Order Flow Imbalance (OFI)**. | Enforced by module boundary rules. |
+| **NEVER** import `MetaTrader5` in any module other than `data_ingestion.py`. | Code linting gate — `from MetaTrader5` or `import MetaTrader5` only allowed in `data_ingestion.py`. |
+| **NEVER** use future data in training labels — `prepare_labels()` must drop the last N rows. | Test assertion enforced. |
+| **NEVER** use standard K-Fold cross-validation for time series — walk-forward validation only. | Code review gate. |
+
+---
+
+## 6. Environment Specifics (Windows)
 
 > **READ THIS BEFORE MAKING ANY CODE CHANGES**
 

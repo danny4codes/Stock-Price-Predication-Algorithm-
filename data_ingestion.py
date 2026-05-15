@@ -289,3 +289,83 @@ def get_pending_orders(symbol: Optional[str] = None) -> pd.DataFrame:
     df = pd.DataFrame([o._asdict() for o in orders])
     df["time_setup"] = pd.to_datetime(df["time_setup"], unit="s", utc=True)
     return df
+
+
+# ---------------------------------------------------------------------------
+# Trade Execution Helpers (to be used by execution.py and risk_manager.py)
+# ---------------------------------------------------------------------------
+
+def get_current_price(symbol: str, direction: int) -> Optional[float]:
+    """
+    Get the current price for order placement.
+
+    Args:
+        symbol:   Trading symbol.
+        direction: 1 = BUY (returns ask), -1 = SELL (returns bid).
+
+    Returns:
+        Price float, or None on failure.
+    """
+    tick = mt5.symbol_info_tick(symbol)
+    if tick is None:
+        logger.warning(f"Cannot get tick for {symbol}: {mt5.last_error()}")
+        return None
+    return tick.ask if direction == 1 else tick.bid
+
+
+def get_position_by_ticket(ticket: int):
+    """
+    Fetch a single position by ticket number.
+
+    Args:
+        ticket: MT5 position ticket.
+
+    Returns:
+        Position named tuple, or empty list if not found.
+    """
+    positions = mt5.positions_get(ticket=ticket)
+    if not positions:
+        logger.error(f"Position ticket {ticket} not found.")
+        return None
+    return positions[0]
+
+
+def mt5_order_send(request: dict):
+    """
+    Send an order to MT5 and return the result.
+
+    Args:
+        request: Order request dict matching mt5.order_send() format.
+
+    Returns:
+        mt5.OrderSendResult or None on failure.
+    """
+    result = mt5.order_send(request)
+    if result is None:
+        logger.error(f"mt5.order_send returned None. Error: {mt5.last_error()}")
+    elif result.retcode != mt5.TRADE_RETCODE_DONE:
+        logger.error(f"mt5.order_send failed. Retcode: {result.retcode}, Comment: {result.comment}")
+    return result
+
+
+# Re-export MT5 constants needed by other modules
+TRADE_RETCODE_DONE      = mt5.TRADE_RETCODE_DONE
+TRADE_ACTION_DEAL       = mt5.TRADE_ACTION_DEAL
+TRADE_ACTION_PENDING    = mt5.TRADE_ACTION_PENDING
+TRADE_ACTION_SLTP       = mt5.TRADE_ACTION_SLTP
+TRADE_ACTION_REMOVE     = mt5.TRADE_ACTION_REMOVE
+ORDER_TYPE_BUY          = mt5.ORDER_TYPE_BUY
+ORDER_TYPE_SELL         = mt5.ORDER_TYPE_SELL
+ORDER_TYPE_BUY_LIMIT    = mt5.ORDER_TYPE_BUY_LIMIT
+ORDER_TYPE_SELL_LIMIT   = mt5.ORDER_TYPE_SELL_LIMIT
+ORDER_TIME_GTC          = mt5.ORDER_TIME_GTC
+ORDER_FILLING_IOC       = mt5.ORDER_FILLING_IOC
+ORDER_FILLING_RETURN    = mt5.ORDER_FILLING_RETURN
+ORDER_STATE_STARTED     = mt5.ORDER_STATE_STARTED
+POSITION_TYPE_BUY       = mt5.POSITION_TYPE_BUY
+POSITION_TYPE_SELL      = mt5.POSITION_TYPE_SELL
+
+
+def mt5_last_error() -> tuple:
+    """Return the last MT5 error as a tuple (code, message)."""
+    return mt5.last_error()
