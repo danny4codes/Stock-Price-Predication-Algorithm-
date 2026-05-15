@@ -176,6 +176,15 @@ To verify: `.\.venv\Scripts\python.exe -m pytest tests\ -v` (81 tests should pas
 - **Outcome**: All **156/156 tests passing** (81 existing + 75 new). Module boundaries strictly enforced.
 - **Next**: Configure `.env` with MT5 credentials, open MT5 terminal, run smoke test
 
+### Session 004 — 2026-05-15
+- **Agent**: Claude (AI Assistant)
+- **Actions**:
+  - Created `.env` file (from `.env.template`) with MT5 connection placeholders for user to fill in: `MT5_LOGIN`, `MT5_PASSWORD`, `MT5_SERVER`, `MT5_PATH`
+  - Created `verify_mt5_connection.py` — standalone 5-step MT5 connectivity test script that validates credentials, fetches account info, symbol info, live tick, and historical data with clear troubleshooting guidance on failure
+  - Updated `.gitignore` confirmed — `.env` is protected from git commits
+- **Outcome**: User-ready connection setup. Once `.env` is filled and MT5 terminal is open, `python verify_mt5_connection.py` confirms end-to-end connectivity before running `python main.py`.
+- **Next**: User fills in `.env`, opens MT5 terminal, runs verification smoke test
+
 ---
 
 ## 🔗 References
