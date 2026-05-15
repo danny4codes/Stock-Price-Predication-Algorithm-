@@ -159,6 +159,21 @@ To verify: `.\.venv\Scripts\python.exe -m pytest tests\ -v` (81 tests should pas
   - Added `HURST_TRENDING_THRESHOLD` import in `feature_engineering.py`
   - Enlarged trending fixture (300→1000 bars, stronger trend) for reliable Hurst > 0.5
 - **Outcome**: All 81 tests passing. System internally consistent and ready for integration testing.
+
+### Session 003 — 2026-05-15
+- **Agent**: Claude (AI Assistant)
+- **Actions**:
+  - Created `2_microstructure_engine.py` — dedicated microstructure processing module with:
+    - `DirectionalChangeDetector` class (Intrinsic Time DC events, upturn/downturn detection)
+    - `calculate_order_flow_imbalance()` (tick-volume OFI proxy with rolling smoothing)
+    - `evaluate_primary_signal()` (single-tick boolean buy/sell: H>0.55 + DC event + OFI confirmation)
+    - `evaluate_primary_signals_batch()` (vectorised batch signal generation)
+    - `classify_regime()` (Hurst-based regime classifier)
+    - `run_microstructure_pipeline()` (full end-to-end: DC→OFI→signals)
+  - Refactored `feature_engineering.py`: removed duplicated inline DC/OFI code, now delegates to `2_microstructure_engine`. Rebuilt `build_feature_matrix()` computation order: DC→OFI→Hurst/GARCH→signals.
+  - Created `tests/test_microstructure_engine.py` — 75 new unit tests (29 DC, 15 OFI, 13 regime, 18 signal, 28 batch, 6 pipeline)
+  - Updated `CONTEXT.md`: Phase 8 complete, test count updated to 156
+- **Outcome**: All **156/156 tests passing** (81 existing + 75 new). Module boundaries strictly enforced.
 - **Next**: Configure `.env` with MT5 credentials, open MT5 terminal, run smoke test
 
 ---
