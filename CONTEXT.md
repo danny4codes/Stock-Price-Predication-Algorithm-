@@ -6,9 +6,9 @@
 ---
 
 ## 📅 Last Updated
-- **Date**: 2026-05-14
-- **Session**: Initial project setup
-- **Updated By**: Antigravity (AI Agent)
+- **Date**: 2026-05-15
+- **Session**: Bug fixes — missing execute_signal, is_trending flag, test fixtures, pd.datetime deprecation, Hurst window bounds
+- **Updated By**: Claude (AI Assistant)
 
 ---
 
@@ -40,15 +40,16 @@
 | `pyproject.toml`             | ✅ Done     | Pytest configuration                          |
 | `logger_config.py`           | ✅ Done     | Rotating file + console logging               |
 | `data_ingestion.py`          | ✅ Done     | MT5 conn, historical/live data, exp. backoff  |
-| `feature_engineering.py`     | ✅ Done     | RSI, MACD, BB, ATR, VWAP, Hurst, GARCH       |
+| `feature_engineering.py`     | ✅ Done     | ATR, VWAP, Hurst, GARCH, DC, OFI, log returns, vol z-score (NO retail indicators) |
 | `signal_generation.py`       | ✅ Done     | Regime detect, trend+MR signals, filters      |
 | `machine_learning.py`        | ✅ Done     | Walk-forward CV, train, save/load, infer      |
 | `risk_manager.py`            | ✅ Done     | 1% sizing, 4% DD limit, validation gate       |
-| `execution.py`               | ✅ Done     | Market/limit orders, position management      |
+| `execution.py`               | ✅ Done     | Market/limit orders, position management, **execute_signal()** |
 | `main.py`                    | ✅ Done     | Async trading loop, multi-symbol              |
-| `tests/test_feature_*.py`    | ✅ Done     | 32 unit tests — all passing                   |
-| `tests/test_risk_manager.py` | ✅ Done     | 22 unit tests — all passing                   |
-| `tests/test_signal_*.py`     | ✅ Done     | 28 unit tests — all passing                   |
+| `tests/test_feature_*.py`    | ✅ Done     | 30 unit tests — all passing                   |
+| `tests/test_risk_manager.py` | ✅ Done     | 23 unit tests — all passing                   |
+| `tests/test_signal_*.py`     | ✅ Done     | 26 unit tests — all passing                   |
+| `tests/` (total)             | ✅ 81 passed| **81/81 tests passing**                        |
 | `.venv/`                     | ✅ Done     | Virtual environment created & populated       |
 
 ---
@@ -58,11 +59,11 @@
 ### System
 | Property         | Value                                                        |
 |------------------|--------------------------------------------------------------|
-| OS               | Windows (PowerShell)                                         |
+| OS               | Windows 11 (PowerShell)                                      |
 | Python Version   | 3.14.4                                                       |
 | Python Path      | `C:\Users\Admin\AppData\Local\Programs\Python\Python314\`   |
 | Project Root     | `D:\Trading\`                                                |
-| Virtual Env      | NOT CREATED — run `python -m venv .venv` first               |
+| Virtual Env      | ✅ Created at `D:\Trading\.venv\`                            |
 
 ### Tools
 | Tool             | Status              | Version / Notes                            |
@@ -70,16 +71,18 @@
 | Claude Code CLI  | ✅ Working          | v2.1.141 — run `claude` in PowerShell      |
 | VS Code (`code`) | ❌ Not in PATH      | Install VS Code OR add to PATH manually    |
 | MetaTrader 5     | ❓ Unknown          | Must be open before running Python scripts |
-| Git              | ❓ Unknown          | Run `git --version` to verify              |
+| Git              | ✅ Working          | Initialized, 2 commits                     |
 
-### Dependencies — NOT YET INSTALLED
+### Dependencies — INSTALLED
 ```
-Run this to install:
-cd D:\Trading
-python -m venv .venv
-.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
+All dependencies installed in .venv:
+- MetaTrader5>=5.0.4885
+- pandas>=2.2.0, numpy>=1.26.0
+- scikit-learn>=1.4.0, arch>=6.3.0
+- hurst>=0.0.5, python-dotenv>=1.0.0
+- pytz>=2024.1, joblib>=1.3.0, ta>=0.11.0
 ```
+To verify: `.\.venv\Scripts\python.exe -m pytest tests\ -v` (81 tests should pass)
 
 ---
 
@@ -100,31 +103,10 @@ pip install -r requirements.txt
 
 ## 🎯 Next Immediate Steps
 
-1. **Install dependencies**:
-   ```powershell
-   cd D:\Trading
-   python -m venv .venv
-   .venv\Scripts\Activate.ps1
-   pip install -r requirements.txt
-   ```
-
-2. **Create `.env`** (copy from `.env.template` and fill in your MT5 credentials):
-   ```powershell
-   Copy-Item .env.template .env
-   # Then edit .env with your MT5 login, password, server, and path
-   ```
-
-3. **Verify MT5 Python API**:
-   ```python
-   import MetaTrader5 as mt5
-   print(mt5.version())  # Should print MT5 version tuple
-   ```
-
-4. **Build `data_ingestion.py`** — MT5 connection with exponential backoff
-
-5. **Fix VS Code PATH** (optional — Claude Code CLI already works):
-   - Download VS Code: https://code.visualstudio.com/
-   - During install: check ✅ "Add to PATH"
+1. **Configure MT5 credentials** — Create `.env` from `.env.template` with your MT5 login, password, server, and terminal path
+2. **Launch MetaTrader 5** — Must be open before Python connects
+3. **Smoke test** — Run `.\.venv\Scripts\python.exe -m pytest tests\ -v` to confirm 81 tests pass
+4. **Paper trading** — Set `MODEL_PATH` in `.env` if a trained model exists, or run without ML (uses rule-based signals only)
 
 ---
 
@@ -146,9 +128,9 @@ pip install -r requirements.txt
 | Issue                          | Severity | Status    | Resolution                              |
 |--------------------------------|----------|-----------|-----------------------------------------|
 | VS Code `code` not in PATH     | Low      | Open      | Install VS Code or add bin to PATH      |
-| No dependencies installed      | High     | Open      | Run `pip install -r requirements.txt`   |
 | MT5 credentials not configured | High     | Open      | Create `.env` from `.env.template`      |
-| Virtual environment not created| High     | Open      | Run `python -m venv .venv`              |
+| MT5 terminal not running       | High     | Open      | Must open MetaTrader5 before Python runs|
+| No live trading                | Info     | N/A       | System tested with unit tests only      |
 
 ---
 
@@ -165,6 +147,21 @@ pip install -r requirements.txt
   - Created `.env.template`
 - **Outcome**: Project scaffolded. Ready for environment setup.
 - **Next**: Install venv + dependencies, then build `data_ingestion.py`
+
+### Session 002 — 2026-05-15
+- **Agent**: Claude (AI Assistant)
+- **Actions**:
+  - Added `execute_signal()` to `execution.py` (was imported by `main.py` but missing)
+  - Fixed `is_trending` flag computation in `build_feature_matrix()` (`feature_engineering.py`) — was never computed, causing all primary signals to be flat
+  - Fixed `pd.datetime` deprecation for pandas 2.x (replaced with `datetime.datetime`)
+  - Fixed Hurst rolling window `min_periods=200 > window=100` → uses `min(HURST_MAX_LAG*2, HURST_ROLLING_WINDOW)`
+  - Rewrote signal test fixtures to use only permitted econometric features (removed retail indicators: RSI, MACD, ADX, EMA, Bollinger Bands, Stochastic)
+  - Fixed DC detector test — price changes were below theta threshold
+  - Fixed risk manager test mocks (updated from `risk_manager.mt5` to `risk_manager._get_current_price`)
+  - Added `HURST_TRENDING_THRESHOLD` import in `feature_engineering.py`
+  - Enlarged trending fixture (300→1000 bars, stronger trend) for reliable Hurst > 0.5
+- **Outcome**: All 81 tests passing. System internally consistent and ready for integration testing.
+- **Next**: Configure `.env` with MT5 credentials, open MT5 terminal, run smoke test
 
 ---
 
