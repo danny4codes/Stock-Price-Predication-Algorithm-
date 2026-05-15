@@ -1,0 +1,45 @@
+# .gitignore — QuantEdge MT5 Algorithmic Trading System
+
+# === SECRETS — NEVER COMMIT ===
+.env
+*.env
+
+# === Python ===
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# === Virtual Environment ===
+.venv/
+venv/
+ENV/
+env/
+
+# === Trained Models (large binary files) ===
+models/*.pkl
+models/*.joblib
+models/*.h5
+
+# === Data Files ===
+data/raw/
+data/processed/
+
+# === Logs ===
+logs/
+
+# === IDE ===
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# === OS ===
+.DS_Store
+Thumbs.db
+desktop.ini
