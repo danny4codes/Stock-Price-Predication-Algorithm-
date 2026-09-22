@@ -248,7 +248,7 @@ def main():
     finally:
         logger.info("Shutting down MT5 connection...")
         shutdown_mt5()
-        logger.info("QuantEdge MT5 — System STOPPED cleanly. ✅")
+        logger.info("QuantEdge MT5 — System STOPPED cleanly.")
 
 
 if __name__ == "__main__":

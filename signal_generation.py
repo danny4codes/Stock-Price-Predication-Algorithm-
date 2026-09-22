@@ -106,9 +106,16 @@ def generate_trend_signal(
 ) -> Signal:
     """
     Generate a trend-following signal based on microstructure:
-        - Directional Change (DC) upturn/downturn event present
-        - Order Flow Imbalance (OFI) confirming direction
-        - Hurst exponent > 0.55 (trending regime)
+        - Directional Change (DC) event CONFIRMS trend direction
+        - BUT entry waits for MICROSTRUCTURE PULLBACK (Phase 9.5)
+        - Pullback trigger: OFI drops below 0, then recovers above 0 (for LONG)
+        - Pullback trigger: OFI rises above 0, then drops below 0 (for SHORT)
+        - Hurst exponent > 0.58 (trending regime)
+
+    Entry Logic (Phase 9.5 - Microstructure Pullback):
+        1. "Primed" state: DC fires with H > 0.58 → Market is primed, DON'T ENTER YET
+        2. Pullback: OFI shows profit-taking (opposite of trend), then flips back
+        3. Entry: Only when pullback confirmation occurs
 
     Args:
         features:           Feature DataFrame from build_feature_matrix().
@@ -127,39 +134,32 @@ def generate_trend_signal(
         row = features.iloc[-1]
         entry = row["close"]
         atr = row.get("atr", 0.0)
-        dc_event = row.get("dc_event")
-        ofi = row.get("ofi", 0.0)
         hurst = row.get("hurst", 0.5)
+        pullback_signal = row.get("pullback_signal", False)
+        pullback_direction = row.get("pullback_direction", 0)
+        ofi = row.get("ofi", 0.0)
 
         # Must be in a trending regime
         if hurst <= HURST_TRENDING_THRESHOLD:
             logger.debug(f"[{symbol}] Not trending (H={hurst:.3f}). No trend signal.")
             return _null_signal(symbol, "trending")
 
-        # Must have a valid DC event
-        if dc_event is None:
-            logger.debug(f"[{symbol}] No DC event. No trend signal.")
-            return _null_signal(symbol, "trending")
-
+        # NEW (Phase 9.5): Only generate signal on pullback confirmation
         direction = 0
-
-        # LONG: upturn DC + positive OFI
-        if dc_event == "upturn" and ofi > OFI_THRESHOLD:
-            direction = 1
-            sl = entry - (atr * atr_sl_multiplier)
-            tp = entry + (atr * atr_tp_multiplier)
-
-        # SHORT: downturn DC + negative OFI
-        elif dc_event == "downturn" and ofi < -OFI_THRESHOLD:
-            direction = -1
-            sl = entry + (atr * atr_sl_multiplier)
-            tp = entry - (atr * atr_tp_multiplier)
+        if pullback_signal and pullback_direction != 0:
+            direction = pullback_direction
 
         if direction == 0:
-            logger.debug(
-                f"[{symbol}] DC={dc_event} OFI={ofi:.4f} — no trend signal."
-            )
+            logger.debug(f"[{symbol}] No pullback confirmation. No trend signal.")
             return _null_signal(symbol, "trending")
+
+        # Set SL/TP based on direction
+        if direction == 1:
+            sl = entry - (atr * atr_sl_multiplier)
+            tp = entry + (atr * atr_tp_multiplier)
+        else:
+            sl = entry + (atr * atr_sl_multiplier)
+            tp = entry - (atr * atr_tp_multiplier)
 
         # Compute confidence from OFI magnitude and Hurst strength
         ofi_magnitude = min(abs(ofi), 1.0)
@@ -173,9 +173,9 @@ def generate_trend_signal(
             timestamp=datetime.now(tz=pytz.utc), regime="trending", atr=atr,
         )
         logger.info(
-            f"[{symbol}] TREND signal: {'LONG' if direction == 1 else 'SHORT'} | "
-            f"Conf: {confidence:.2f} | DC: {dc_event} | OFI: {ofi:.4f} | "
-            f"Hurst: {hurst:.3f} | Entry: {entry:.5f} | SL: {sl:.5f} | TP: {tp:.5f}"
+            f"[{symbol}] TREND signal (PULLBACK ENTRY): {'LONG' if direction == 1 else 'SHORT'} | "
+            f"Conf: {confidence:.2f} | OFI: {ofi:.4f} | Hurst: {hurst:.3f} | "
+            f"Entry: {entry:.5f} | SL: {sl:.5f} | TP: {tp:.5f}"
         )
         return signal
 
@@ -303,29 +303,28 @@ def combine_signals(
     """
     Combine trend and mean-reversion signals based on current market regime.
 
-    Strategy:
-        - "trending"       → use trend_sig if confidence > MIN_SIGNAL_CONFIDENCE
-        - "mean_reverting" → use mr_sig if confidence > MIN_SIGNAL_CONFIDENCE
-        - "random"         → return null signal (no trade)
+    Strategy (TREND-FOLLOWING MODE - Option A):
+        - Only "trending" regime generates signals using trend_sig
+        - "mean_reverting" and "random" regimes return null signal (no trade)
+        - Mean-reversion strategy is DISABLED per prop firm pivot
 
     ML confidence acts as a multiplier: final_conf = signal_conf × (1 + ml_conf) / 2
 
     Args:
         trend_sig:      Signal from generate_trend_signal().
-        mr_sig:         Signal from generate_mean_reversion_signal().
+        mr_sig:         Signal from generate_mean_reversion_signal() (IGNORED).
         ml_confidence:  Probability from ML model (0.0–1.0).
         regime:         Current market regime string.
 
     Returns:
         The selected Signal, or null signal if no clear edge.
     """
-    if regime == "trending":
-        base = trend_sig
-    elif regime == "mean_reverting":
-        base = mr_sig
-    else:
-        logger.debug("Random walk regime — no signal generated.")
-        return _null_signal(trend_sig["symbol"] if trend_sig else "UNKNOWN", "random")
+    # TREND-FOLLOWING ONLY: Mean-reversion is DISABLED
+    if regime != "trending":
+        logger.debug(f"Non-trending regime ({regime}) — no signal generated (MR disabled).")
+        return _null_signal(trend_sig["symbol"] if trend_sig else "UNKNOWN", regime)
+
+    base = trend_sig
 
     if base["direction"] == 0:
         return base
@@ -383,7 +382,7 @@ def apply_signal_filters(
         logger.warning(f"[{sym}] Signal rejected: zero SL distance.")
         return None
     rr_ratio = tp_dist / sl_dist
-    if rr_ratio < MIN_RISK_REWARD_RATIO:
+    if rr_ratio < MIN_RISK_REWARD_RATIO - 0.001:  # Allow small floating-point tolerance
         logger.warning(
             f"[{sym}] Signal rejected: R:R {rr_ratio:.2f} < {MIN_RISK_REWARD_RATIO} minimum."
         )
@@ -400,7 +399,7 @@ def apply_signal_filters(
         return None
 
     logger.info(
-        f"[{sym}] Signal APPROVED ✅ | "
+        f"[{sym}] Signal APPROVED | "
         f"{'LONG' if signal['direction'] == 1 else 'SHORT'} | "
         f"Conf: {signal['confidence']:.2f} | R:R {rr_ratio:.2f}"
     )

@@ -3,6 +3,7 @@
 
 import logging
 import logging.handlers
+import sys
 from pathlib import Path
 from config import LOG_DIR, LOG_MAX_BYTES, LOG_BACKUP_COUNT, LOG_FORMAT, LOG_DATE_FORMAT
 
@@ -40,14 +41,22 @@ def setup_logger(name: str, log_dir: Path = LOG_DIR) -> logging.Logger:
         filename=log_file,
         maxBytes=LOG_MAX_BYTES,
         backupCount=LOG_BACKUP_COUNT,
-        encoding="utf-8"
+        encoding="utf-8",
+        delay=True  # Defer file opening to avoid Windows file locking on rotation
     )
     file_handler.setLevel(logging.DEBUG)
     file_handler.setFormatter(formatter)
 
     # --- Console Handler (INFO and above) ---
-    console_handler = logging.StreamHandler()
+    console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setLevel(logging.INFO)
+    try:
+        # On Windows, sys.stdout may use cp1252 — reconfigure to UTF-8
+        sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")  # type: ignore[union-attr]
+        sys.stderr.reconfigure(encoding="utf-8", errors="backslashreplace")  # type: ignore[union-attr]
+    except (AttributeError, ValueError):
+        # Python < 3.7 or non-Windows — skip reconfigure
+        pass
     console_handler.setFormatter(formatter)
 
     logger.addHandler(file_handler)

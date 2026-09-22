@@ -400,12 +400,12 @@ class TestClassifyRegime:
     def test_trending_above_threshold(self):
         assert classify_regime(0.60) == "trending"
         assert classify_regime(0.90) == "trending"
-        assert classify_regime(0.55 + 1e-9) == "trending"
+        assert classify_regime(0.58 + 1e-9) == "trending"
 
     def test_mean_reverting_below_threshold(self):
-        assert classify_regime(0.40) == "mean_reverting"
+        assert classify_regime(0.30) == "mean_reverting"
         assert classify_regime(0.10) == "mean_reverting"
-        assert classify_regime(0.45 - 1e-9) == "mean_reverting"
+        assert classify_regime(0.35 - 1e-9) == "mean_reverting"
 
     def test_random_between_thresholds(self):
         assert classify_regime(0.50) == "random"
@@ -425,9 +425,10 @@ class TestEvaluatePrimarySignal:
     """Tests for the evaluate_primary_signal function."""
 
     # --- Primary Buy conditions ---
+    # PRIMED AT LOCAL LOW (downturn) → BUY opportunity
     def test_primary_buy_all_conditions_met(self):
         result = evaluate_primary_signal(
-            hurst=0.60, dc_event="upturn", ofi=0.15
+            hurst=0.60, dc_event="downturn", ofi=0.16
         )
         assert result.buy is True
         assert result.sell is False
@@ -436,7 +437,7 @@ class TestEvaluatePrimarySignal:
 
     def test_primary_buy_strength_calculation(self):
         result = evaluate_primary_signal(
-            hurst=0.70, dc_event="upturn", ofi=0.50
+            hurst=0.70, dc_event="downturn", ofi=0.50
         )
         assert result.buy is True
         # hurst_conviction = (0.70 - 0.5) * 2 = 0.40
@@ -453,24 +454,24 @@ class TestEvaluatePrimarySignal:
         assert result.buy is False
 
     def test_primary_buy_trending_but_ofi_too_low(self):
-        """DC event present but OFI below threshold."""
+        """Downturn event present but OFI below threshold."""
         result = evaluate_primary_signal(
-            hurst=0.60, dc_event="upturn", ofi=0.01
+            hurst=0.60, dc_event="downturn", ofi=0.01
         )
         assert result.buy is False
         assert "OFI" in result.reason.lower() or "below" in result.reason.lower()
 
     def test_primary_buy_trending_but_negative_ofi(self):
-        """DC upturn but negative OFI → no buy."""
+        """Downturn but negative OFI → no buy."""
         result = evaluate_primary_signal(
-            hurst=0.60, dc_event="upturn", ofi=-0.15
+            hurst=0.60, dc_event="downturn", ofi=-0.15
         )
         assert result.buy is False
 
     # --- Primary Sell conditions ---
     def test_primary_sell_all_conditions_met(self):
         result = evaluate_primary_signal(
-            hurst=0.60, dc_event="downturn", ofi=-0.15
+            hurst=0.60, dc_event="downturn", ofi=-0.16
         )
         assert result.sell is True
         assert result.buy is False
@@ -504,7 +505,7 @@ class TestEvaluatePrimarySignal:
     def test_mean_reverting_no_primary_signal(self):
         """Mean-reverting regime → no primary signals."""
         result = evaluate_primary_signal(
-            hurst=0.35, dc_event="upturn", ofi=0.50
+            hurst=0.30, dc_event="upturn", ofi=0.50
         )
         assert result.buy is False
         assert result.sell is False
@@ -522,7 +523,7 @@ class TestEvaluatePrimarySignal:
     def test_downturn_in_mean_revert(self):
         """Even with downturn + negative OFI, mean-revert kills the signal."""
         result = evaluate_primary_signal(
-            hurst=0.40, dc_event="downturn", ofi=-0.50
+            hurst=0.30, dc_event="downturn", ofi=-0.50
         )
         assert result.sell is False
 
@@ -537,7 +538,7 @@ class TestEvaluatePrimarySignal:
     # --- Result object ---
     def test_result_to_dict(self):
         result = evaluate_primary_signal(
-            hurst=0.60, dc_event="upturn", ofi=0.15
+            hurst=0.60, dc_event="upturn", ofi=0.16
         )
         d = result.to_dict()
         assert d["buy"] is True

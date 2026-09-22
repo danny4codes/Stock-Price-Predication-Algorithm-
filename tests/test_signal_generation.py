@@ -41,9 +41,11 @@ def make_features(n: int = 50, override: dict = None) -> pd.DataFrame:
         "vol_zscore":           np.full(n, 0.5),
         "vwap":                 np.full(n, 1.1000),
         "vwap_dist":            np.full(n, 0.0),
-        "ofi":                  np.full(n, 0.0),
+        "ofi":                  np.full(n, 0.15),
         "dc_event":             [None] * n,
         "dc_signal_strength":   np.full(n, 0.0),
+        "pullback_signal":      np.full(n, False),
+        "pullback_direction":   np.full(n, 0),
     }
     if override:
         for k, v in override.items():
@@ -65,7 +67,7 @@ class TestDetectMarketRegime:
         assert detect_market_regime(0.60) == "trending"
 
     def test_mean_reverting(self):
-        assert detect_market_regime(0.40) == "mean_reverting"
+        assert detect_market_regime(0.30) == "mean_reverting"
 
     def test_random_high_boundary(self):
         assert detect_market_regime(0.50) == "random"
@@ -87,23 +89,27 @@ class TestDetectMarketRegime:
 
 class TestGenerateTrendSignal:
     def test_long_signal_conditions(self):
-        """Hurst > 0.55 + upturn DC event + positive OFI → LONG"""
+        """Hurst > 0.58 + upturn DC event + pullback confirmation → LONG"""
         features = make_features(override={
             "dc_event": "upturn",
             "ofi": 0.15,
             "hurst": 0.60,
             "is_trending": True,
+            "pullback_signal": True,
+            "pullback_direction": 1,
         })
         sig = generate_trend_signal(features, "EURUSD")
         assert sig["direction"] == 1
 
     def test_short_signal_conditions(self):
-        """Hurst > 0.55 + downturn DC event + negative OFI → SHORT"""
+        """Hurst > 0.58 + downturn DC event + pullback confirmation → SHORT"""
         features = make_features(override={
             "dc_event": "downturn",
             "ofi": -0.15,
             "hurst": 0.60,
             "is_trending": True,
+            "pullback_signal": True,
+            "pullback_direction": -1,
         })
         sig = generate_trend_signal(features, "EURUSD")
         assert sig["direction"] == -1
@@ -156,7 +162,7 @@ class TestGenerateMeanReversionSignal:
         features = make_features(override={
             "vwap_dist": -0.002,  # price significantly below VWAP
             "vol_zscore": 1.5,    # volatility spike
-            "hurst": 0.40,        # mean-reverting regime
+            "hurst": 0.30,        # mean-reverting regime (adjusted threshold)
         })
         sig = generate_mean_reversion_signal(features, "EURUSD")
         assert sig["direction"] == 1
@@ -166,7 +172,7 @@ class TestGenerateMeanReversionSignal:
         features = make_features(override={
             "vwap_dist": 0.002,   # price significantly above VWAP
             "vol_zscore": 1.5,    # volatility spike
-            "hurst": 0.40,        # mean-reverting regime
+            "hurst": 0.30,        # mean-reverting regime (adjusted threshold)
             "vwap": 1.1000,
             "close": 1.1030,
         })
@@ -216,7 +222,8 @@ class TestCombineSignals:
         trend = self._make_signal("EURUSD", 1, 0.70, "trending")
         mr    = self._make_signal("EURUSD", -1, 0.80, "mean_reverting")
         result = combine_signals(trend, mr, 0.6, "mean_reverting")
-        assert result["direction"] == -1  # MR signal wins
+        # MR disabled - returns flat signal in non-trending regime
+        assert result["direction"] == 0
 
     def test_random_returns_flat(self):
         trend = self._make_signal("EURUSD", 1, 0.70)

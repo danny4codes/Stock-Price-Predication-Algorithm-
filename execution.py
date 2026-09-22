@@ -208,6 +208,63 @@ def execute_signal(signal: Signal, account_info: dict) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Trailing Stops
+# ---------------------------------------------------------------------------
+
+def trail_stop(
+    ticket: int,
+    current_price: float,
+    trail_distance: float,
+    is_long: bool,
+) -> bool:
+    """
+    Move stop loss to trail behind price for trend following.
+
+    Args:
+        ticket:         MT5 position ticket.
+        current_price:  Current market price (bid for long, ask for short).
+        trail_distance: Distance (in points) to trail SL behind price.
+        is_long:        True for long positions, False for shorts.
+
+    Returns:
+        True if SL was modified, False otherwise.
+    """
+    pos = get_position_by_ticket(ticket)
+    if pos is None:
+        logger.error(f"Cannot trail stop for ticket {ticket}: position not found.")
+        return False
+
+    new_sl = current_price - trail_distance if is_long else current_price + trail_distance
+
+    # Only move SL in favorable direction
+    if is_long and new_sl <= pos.sl:
+        return True  # Already trailing or no movement needed
+    if not is_long and new_sl >= pos.sl:
+        return True
+
+    logger.info(f"Trailing stop for ticket {ticket}: SL {pos.sl:.5f} -> {new_sl:.5f}")
+    return modify_sl_tp(ticket, new_sl, pos.tp)
+
+
+def calculate_trailing_distance(symbol: str, atr: float, multiplier: float = 1.5) -> float:
+    """
+    Calculate trailing stop distance based on ATR.
+
+    Args:
+        symbol:     Trading symbol.
+        atr:        Current ATR value.
+        multiplier: ATR multiplier (default 1.5 for trend following).
+
+    Returns:
+        Trailing distance in points.
+    """
+    sym_info = get_symbol_info(symbol)
+    if sym_info is None:
+        return atr * multiplier * 10  # Fallback estimate
+    return atr * multiplier / sym_info["point"]
+
+
+# ---------------------------------------------------------------------------
 # Position Management
 # ---------------------------------------------------------------------------
 
@@ -387,7 +444,7 @@ def _log_order_result(result) -> dict:
             "retcode":    result.retcode,
         }
         logger.info(
-            f"✅ Order filled | Ticket: {result.order} | "
+            f"[FILLED] Order filled | Ticket: {result.order} | "
             f"Price: {result.price} | Volume: {result.volume} | "
             f"Comment: {result.comment}"
         )
@@ -395,7 +452,7 @@ def _log_order_result(result) -> dict:
     else:
         error = mt5_last_error()
         logger.error(
-            f"❌ Order failed | retcode: {result.retcode} | "
+            f"[FAILED] Order failed | retcode: {result.retcode} | "
             f"comment: {result.comment} | MT5 error: {error}"
         )
         return {

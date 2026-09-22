@@ -23,10 +23,14 @@ from datetime import datetime
 from config import (
     DC_THETA,
     DC_MIN_PRICE,
+    DC_MICRO_THETA,
     OFI_WINDOW,
     OFI_THRESHOLD,
+    OFI_PULLBACK_THRESHOLD,
     HURST_TRENDING_THRESHOLD,
     HURST_MEAN_REVERT_THRESHOLD,
+    PULLBACK_WAIT_BARS,
+    OFI_CONFIRMATION_BARS,
 )
 from logger_config import setup_logger
 
@@ -412,9 +416,10 @@ def evaluate_primary_signal(
         return result
 
     # ------------------------------------------------------------------
-    # Primary Buy: Upturn DC + Positive OFI in trending regime
+    # Primary Buy: Downturn DC + Positive OFI in trending regime
+    # DC DOWNTURN fires at local minimum - prime opportunity for LONG entry
     # ------------------------------------------------------------------
-    if dc_event == 'upturn' and ofi > ofi_threshold:
+    if dc_event == 'downturn' and ofi > ofi_threshold:
         result.buy = True
         # Strength: product of Hurst conviction and OFI magnitude
         hurst_conviction = min((hurst - 0.5) * 2, 1.0)  # H: 0.55-1.0 → 0-1
@@ -424,15 +429,16 @@ def evaluate_primary_signal(
         )
         result.reason = (
             f"Primary_BUY: H={hurst:.3f} (trending) + "
-            f"DC=upturn + OFI={ofi:.4f} > {ofi_threshold}"
+            f"DC=downturn + OFI={ofi:.4f} > {ofi_threshold}"
         )
-        logger.info(f"  ✅ {result.reason} | strength={result.buy_strength:.3f}")
+        logger.info(f"  [OK] {result.reason} | strength={result.buy_strength:.3f}")
         return result
 
     # ------------------------------------------------------------------
-    # Primary Sell (exact inverse): Downturn DC + Negative OFI in trending
+    # Primary Sell: Upturn DC + Negative OFI in trending regime
+    # DC UPTURN fires at local maximum - prime opportunity for SHORT entry
     # ------------------------------------------------------------------
-    if dc_event == 'downturn' and ofi < -ofi_threshold:
+    if dc_event == 'upturn' and ofi < -ofi_threshold:
         result.sell = True
         hurst_conviction = min((hurst - 0.5) * 2, 1.0)
         ofi_conviction   = min(abs(ofi), 1.0)
@@ -441,22 +447,22 @@ def evaluate_primary_signal(
         )
         result.reason = (
             f"Primary_SELL: H={hurst:.3f} (trending) + "
-            f"DC=downturn + OFI={ofi:.4f} < {-ofi_threshold}"
+            f"DC=upturn + OFI={ofi:.4f} < {-ofi_threshold}"
         )
-        logger.info(f"  ✅ {result.reason} | strength={result.sell_strength:.3f}")
+        logger.info(f"  [OK] {result.reason} | strength={result.sell_strength:.3f}")
         return result
 
     # ------------------------------------------------------------------
     # Conditions not met — no primary signal
     # ------------------------------------------------------------------
-    if dc_event == 'upturn':
-        result.reason = (
-            f"No primary signal: upturn detected but OFI={ofi:.4f} "
-            f"below threshold {ofi_threshold}"
-        )
-    elif dc_event == 'downturn':
+    if dc_event == 'downturn':
         result.reason = (
             f"No primary signal: downturn detected but OFI={ofi:.4f} "
+            f"below threshold {ofi_threshold}"
+        )
+    elif dc_event == 'upturn':
+        result.reason = (
+            f"No primary signal: upturn detected but OFI={ofi:.4f} "
             f"above threshold {-ofi_threshold}"
         )
     logger.debug(result.reason)
@@ -506,8 +512,10 @@ def evaluate_primary_signals_batch(
     ofi_pos   = df['ofi'] > ofi_threshold
     ofi_neg   = df['ofi'] < -ofi_threshold
 
-    df['primary_buy']  = trending & upturn & ofi_pos
-    df['primary_sell'] = trending & downturn & ofi_neg
+    # DC DOWNTURN = local minimum = LONG opportunity
+    # DC UPTURN = local maximum = SHORT opportunity
+    df['primary_buy']  = trending & downturn & ofi_pos
+    df['primary_sell'] = trending & upturn & ofi_neg
 
     # --- Signal strength ---
     hurst_conv = np.clip((df['hurst'] - 0.5) * 2, 0, 1)
@@ -530,7 +538,158 @@ def evaluate_primary_signals_batch(
 
 
 # ===========================================================================
-# Convenience: Full Pipeline — DC + OFI + Primary Signals from OHLCV
+# 4. MICROSTRUCTURE PULLBACK ENTRY LOGIC
+# ===========================================================================
+
+class PullbackSignalResult:
+    """
+    Container for pullback signal evaluation.
+
+    The "Primed" state is set when:
+    1. A major DC event (upturn/downturn) has fired
+    2. Hurst > 0.58 (strong trending regime confirmed)
+    The system waits for a microstructure pullback before entering.
+
+    Pullback trigger conditions:
+    - LONG: OFI drops below 0 (profit-taking), then flips back above 0
+    - SHORT: OFI rises above 0 (profit-taking), then flips back below 0
+    """
+    __slots__ = ('primed', 'primed_direction', 'primed_bar', 'pullback_triggered',
+                 'pullback_bar', 'ofi_pullback_confirmed', 'reason')
+
+    def __init__(self, primed: bool = False, primed_direction: int = 0,
+                 primed_bar: int = -1, pullback_triggered: bool = False,
+                 pullback_bar: int = -1, ofi_pullback_confirmed: bool = False,
+                 reason: str = ''):
+        self.primed = primed
+        self.primed_direction = primed_direction  # 1=long, -1=short
+        self.primed_bar = primed_bar  # Which bar triggered primed state
+        self.pullback_triggered = pullback_triggered
+        self.pullback_bar = pullback_bar
+        self.ofi_pullback_confirmed = ofi_pullback_confirmed
+        self.reason = reason
+
+    def to_dict(self) -> dict:
+        return {
+            'primed': self.primed,
+            'primed_direction': self.primed_direction,
+            'primed_bar': self.primed_bar,
+            'pullback_triggered': self.pullback_triggered,
+            'pullback_bar': self.pullback_bar,
+            'ofi_pullback_confirmed': self.ofi_pullback_confirmed,
+            'reason': self.reason,
+        }
+
+
+def evaluate_pullback_signals(
+    features: pd.DataFrame,
+    ofi_threshold: float = OFI_THRESHOLD,
+    pullback_bars: int = PULLBACK_WAIT_BARS,
+    confirmation_bars: int = OFI_CONFIRMATION_BARS,
+    ofi_delta_threshold: float = 0.005,
+) -> pd.DataFrame:
+    """
+    Evaluate microstructure entry logic using OFI Momentum Resumption.
+
+    Phase 1: Primed State Detection (from DC extremum)
+        - When DC upturn fires with sufficient OFI, system is primed SHORT (primed_direction = -1)
+        - When DC downturn fires with sufficient negative OFI, system is primed LONG (primed_direction = 1)
+
+    Phase 2: OFI Momentum Resumption Entry
+        - LONG: After DC downturn primes LONG, wait for OFI to flip positive AND ofi_delta > threshold
+          (buying momentum sharply resumes after the extreme)
+        - SHORT: After DC upturn primes SHORT, wait for OFI to flip negative AND ofi_delta < -threshold
+          (selling momentum sharply resumes after the extreme)
+
+    Args:
+        features: DataFrame with ['hurst', 'dc_event', 'ofi', 'close', 'regime'] columns
+        ofi_threshold: Minimum |OFI| magnitude for primed state confirmation
+        pullback_bars: Not used (kept for API compatibility)
+        confirmation_bars: Not used (kept for API compatibility)
+        ofi_delta_threshold: Minimum OFI change to confirm momentum resumption
+
+    Returns:
+        DataFrame with ['pullback_signal', 'pullback_direction', 'pullback_strength',
+                        'primed', 'primed_direction'] columns added
+    """
+    if features.empty:
+        logger.warning("evaluate_pullback_signals: empty DataFrame")
+        return features
+
+    df = features.copy()
+    n = len(df)
+
+    # Initialize new columns
+    df['pullback_signal'] = False
+    df['pullback_direction'] = 0
+    df['pullback_strength'] = 0.0
+    df['primed'] = False
+    df['primed_direction'] = 0
+
+    # Track primed state for momentum resumption entries
+    primed_direction = 0  # 0=not primed, 1=primed LONG, -1=primed SHORT
+
+    for i in range(1, n):
+        row = df.iloc[i]
+        prev_row = df.iloc[i-1]
+        hurst = row.get('hurst', 0.5)
+        dc_event = row.get('dc_event')
+        ofi = row.get('ofi', 0.0)
+        prev_ofi = prev_row.get('ofi', 0.0)
+        regime = row.get('regime', 'random')
+
+        # OFI Delta: measure momentum change
+        ofi_delta = ofi - prev_ofi
+
+        # ---- Phase 1: Set Primed State on DC+OFI confirmation ----
+        if dc_event is not None and regime == 'trending' and hurst > HURST_TRENDING_THRESHOLD:
+            if dc_event == 'upturn' and ofi < -ofi_threshold:
+                # We hit a local high with negative OFI (distribution) - primed for SHORT
+                primed_direction = -1
+                df.at[df.index[i], 'primed'] = True
+                df.at[df.index[i], 'primed_direction'] = -1
+            elif dc_event == 'downturn' and ofi > ofi_threshold:
+                # We hit a local low with positive OFI (accumulation) - primed for LONG
+                primed_direction = 1
+                df.at[df.index[i], 'primed'] = True
+                df.at[df.index[i], 'primed_direction'] = 1
+
+        # ---- Phase 2: OFI Momentum Resumption Entry ----
+        # Clear primed state on opposite DC event (trend reversed)
+        if dc_event == 'upturn' and primed_direction == 1:
+            primed_direction = 0
+            continue
+        if dc_event == 'downturn' and primed_direction == -1:
+            primed_direction = 0
+            continue
+
+        # LONG entry: After DC downturn (primed LONG), OFI resumes positive momentum
+        # OFI must be positive (buying pressure) and accelerating (delta > threshold)
+        if primed_direction == 1:
+            if ofi > 0 and ofi_delta > ofi_delta_threshold:
+                df.at[df.index[i], 'pullback_signal'] = True
+                df.at[df.index[i], 'pullback_direction'] = 1
+                df.at[df.index[i], 'pullback_strength'] = min(abs(ofi), 1.0)
+                primed_direction = 0
+
+        # SHORT entry: After DC upturn (primed SHORT), OFI resumes negative momentum
+        # OFI must be negative (selling pressure) and accelerating negative (delta < -threshold)
+        elif primed_direction == -1:
+            if ofi < 0 and ofi_delta < -ofi_delta_threshold:
+                df.at[df.index[i], 'pullback_signal'] = True
+                df.at[df.index[i], 'pullback_direction'] = -1
+                df.at[df.index[i], 'pullback_strength'] = min(abs(ofi), 1.0)
+                primed_direction = 0
+
+    n_signals = df['pullback_signal'].sum()
+    n_primed = df['primed'].sum()
+    logger.info(f"Pullback signals: {n_signals} entries from {n_primed} primed states")
+
+    return df
+
+
+# ===========================================================================
+# Convenience: Full Pipeline — DC + OFI + Primary Signals + Pullback from OHLCV
 # ===========================================================================
 
 def run_microstructure_pipeline(
@@ -545,6 +704,7 @@ def run_microstructure_pipeline(
         1. Detect Directional Change events (per-tick)
         2. Calculate Order Flow Imbalance (rolling)
         3. Generate primary boolean signals
+        4. Evaluate pullback entry signals
 
     Args:
         df: OHLCV DataFrame with columns ['open', 'high', 'low', 'close', 'volume']
@@ -557,8 +717,9 @@ def run_microstructure_pipeline(
 
     Returns:
         DataFrame with original data plus:
-            ['dc_event', 'dc_signal_strength', 'ofi',
-             'primary_buy', 'primary_sell', 'signal_strength', 'regime']
+            ['dc_event', 'dc_signal_strength', 'dc_extremum_type',
+             'ofi', 'primary_buy', 'primary_sell', 'signal_strength', 'regime',
+             'pullback_signal', 'pullback_direction', 'primed']
     """
     if df is None or df.empty:
         logger.warning("run_microstructure_pipeline: empty input")
@@ -581,7 +742,7 @@ def run_microstructure_pipeline(
         result['hurst'] = 0.5
         result['is_trending'] = False
 
-    # ---- Step 1: Directional Changes ----
+    # ---- Step 1: Directional Changes (major) ----
     detector = DirectionalChangeDetector(theta=theta)
     dc_df = detector.process_series(
         prices=result['close'],
@@ -589,6 +750,8 @@ def run_microstructure_pipeline(
     )
     result['dc_event']           = dc_df['event_type']
     result['dc_signal_strength'] = dc_df['signal_strength']
+    result['dc_extremum_type']   = dc_df['extremum_type']
+    result['extremum_price']     = dc_df['extremum_price']
 
     # ---- Step 2: OFI ----
     result['ofi'] = calculate_order_flow_imbalance(
@@ -597,5 +760,8 @@ def run_microstructure_pipeline(
 
     # ---- Step 3: Primary Signals ----
     result = evaluate_primary_signals_batch(result, ofi_threshold=ofi_threshold)
+
+    # ---- Step 4: Pullback Entry Logic (Phase 9.5 - OFI-based) ----
+    result = evaluate_pullback_signals(result, ofi_threshold=ofi_threshold)
 
     return result

@@ -50,6 +50,7 @@ _mse = _il.import_module("2_microstructure_engine")
 DirectionalChangeDetector = _mse.DirectionalChangeDetector
 calculate_order_flow_imbalance = _mse.calculate_order_flow_imbalance
 evaluate_primary_signals_batch = _mse.evaluate_primary_signals_batch
+evaluate_pullback_signals = _mse.evaluate_pullback_signals
 
 logger = setup_logger(__name__)
 
@@ -102,7 +103,6 @@ def compute_hurst_exponent(
 
     try:
         H, _, _ = compute_Hc(clean.values, kind="price", simplified=True)
-        logger.debug(f"Hurst exponent: {H:.4f}")
         return float(H)
     except Exception as e:
         logger.warning(f"Hurst computation failed: {e}. Returning H=0.5.")
@@ -132,6 +132,7 @@ def fit_garch(
         return np.nan, None
 
     try:
+        import warnings
         model = arch_model(
             clean * 100,  # Scale to % returns for numerical stability
             vol="Garch",
@@ -139,9 +140,10 @@ def fit_garch(
             q=q,
             dist="Normal",
         )
-        result = model.fit(disp="off", show_warning=False)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            result = model.fit(disp="off", show_warning=False)
         cond_vol = result.conditional_volatility.iloc[-1] / 100  # Scale back
-        logger.debug(f"GARCH fitted. Latest conditional vol: {cond_vol:.6f}")
         return float(cond_vol), result
     except Exception as e:
         logger.warning(f"GARCH fitting failed: {e}. Returning NaN.")
@@ -233,14 +235,17 @@ def build_feature_matrix(df: pd.DataFrame) -> pd.DataFrame:
 
     features = pd.DataFrame(index=df.index)
 
-    # --- Microstructure Step 1: Directional Changes ---
+    # --- Microstructure Step 1: Directional Changes (major) ---
     # Must happen early — only needs close + volume, no other features required.
     dc_detector = DirectionalChangeDetector()
     dc_df = dc_detector.process_series(
         prices=df["close"], volumes=df["volume"]
     )
-    features["dc_event"] = dc_df["event_type"]
-    features["dc_signal_strength"] = dc_df["signal_strength"]
+    # Forward-fill DC events and signal strength so non-DC rows have previous values
+    features["dc_event"] = dc_df["event_type"].ffill()
+    features["dc_signal_strength"] = dc_df["signal_strength"].ffill().fillna(0.0)
+    features["dc_extremum_type"] = dc_df["extremum_type"].ffill()
+    features["extremum_price"] = dc_df["extremum_price"].ffill()
 
     # --- Microstructure Step 2: Order Flow Imbalance ---
     features["ofi"] = calculate_order_flow_imbalance(df["close"], df["volume"])
@@ -286,12 +291,17 @@ def build_feature_matrix(df: pd.DataFrame) -> pd.DataFrame:
     # Now all required columns (hurst, dc_event, ofi, is_trending) are present.
     features = evaluate_primary_signals_batch(features)
 
+    # --- Step 4: Pullback signal detection (Phase 9.5) ---
+    # Adds pullback_signal, pullback_direction, pullback_strength, primed columns
+    features = evaluate_pullback_signals(features)
+
     # --- Volatility Z-Score (GARCH) ---
     vol_rolling_mean = features["garch_vol"].rolling(VOL_ZSCORE_WINDOW, min_periods=20).mean()
     vol_rolling_std = features["garch_vol"].rolling(VOL_ZSCORE_WINDOW, min_periods=20).std()
     features["vol_zscore"] = (features["garch_vol"] - vol_rolling_mean) / vol_rolling_std.replace(0, np.nan)
 
-    # Drop warmup NaN rows
+    # Drop warmup NaN rows (but preserve pullback signal rows by filling them first)
+    # Pullback signals must be preserved even if other columns have NaN
     n_before = len(features)
     features.dropna(inplace=True)
     n_after = len(features)

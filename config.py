@@ -34,7 +34,8 @@ SYMBOLS = [
     "EURUSD",
     "GBPUSD",
     "USDJPY",
-    "XAUUSD",  # Gold
+    # XAUUSD removed - volatility too high for current signal logic
+    # Re-add after optimizing volatility handling
 ]
 
 # MetaTrader5 timeframe constants (import mt5 to use these)
@@ -45,7 +46,7 @@ LOWER_TIMEFRAME_STR     = "M15"   # For entry timing
 
 # Historical data lookback for feature engineering
 LOOKBACK_BARS           = 500     # Number of bars to fetch for feature calculation
-FEATURE_WARMUP_BARS     = 100     # Bars discarded due to indicator warmup
+FEATURE_WARMUP_BARS     = 250     # Bars discarded due to indicator warmup (must exceed HURST_ROLLING_WINDOW)
 
 # ===========================================================================
 # MAIN LOOP PARAMETERS
@@ -72,18 +73,20 @@ ML_TEST_SIZE_RATIO      = 0.2     # Ratio of data reserved for final test set
 ATR_PERIOD              = 14      # ATR lookback — used for SL/TP sizing only
 HURST_MIN_LAG           = 2       # Min lag for R/S Hurst analysis
 HURST_MAX_LAG           = 100     # Max lag for R/S Hurst analysis
-HURST_ROLLING_WINDOW    = 100     # Rolling window for Hurst computation
+HURST_ROLLING_WINDOW    = 200     # Rolling window for Hurst computation (must be >= HURST_MAX_LAG * 2)
 GARCH_P                 = 1       # GARCH lag order for past variances
 GARCH_Q                 = 1       # ARCH lag order for past residuals
 GARCH_ROLLING_WINDOW    = 100     # Rolling window for GARCH volatility
 
 # Directional Changes (DC) parameters
-DC_THETA                = 0.001   # Threshold for significant price movement (0.1%)
+DC_THETA                = 0.002   # Threshold for significant price movement (0.2%) - TIGHTENED
 DC_MIN_PRICE            = 0.0001  # Min price for DC detection
+DC_MICRO_THETA          = 0.0005  # Micro-DC threshold for pullback detection (0.05%)
 
 # Order Flow Imbalance (OFI) parameters
 OFI_WINDOW              = 20      # Rolling window for OFI smoothing
-OFI_THRESHOLD           = 0.1     # Min |OFI| magnitude to confirm signal
+OFI_THRESHOLD           = 0.10    # Min |OFI| magnitude to confirm signal (adjusted for pullback logic)
+OFI_PULLBACK_THRESHOLD  = 0.0     # OFI crossing zero for pullback detection
 
 # Volatility Z-Score for mean-reversion entry
 VOL_ZSCORE_WINDOW       = 50      # Window for GARCH vol z-score calc
@@ -92,12 +95,16 @@ VOL_ZSCORE_THRESHOLD    = 1.0     # Z-score threshold for vol spike
 # VWAP deviation for mean-reversion entry
 VWAP_DIST_THRESHOLD     = 0.001   # Min |price - VWAP| / VWAP for MR entry
 
+# Microstructure Pullback entry parameters
+PULLBACK_WAIT_BARS      = 10      # Max bars to wait for pullback after Primed state
+OFI_CONFIRMATION_BARS   = 3       # Bars OFI must sustain above/below zero for confirmation
+
 # ===========================================================================
 # REGIME DETECTION THRESHOLDS (Hurst Exponent)
 # ===========================================================================
-HURST_TRENDING_THRESHOLD      = 0.55   # H > 0.55 → trending
-HURST_MEAN_REVERT_THRESHOLD   = 0.45   # H < 0.45 → mean reverting
-# H between 0.45 and 0.55 → random walk (no trade)
+HURST_TRENDING_THRESHOLD      = 0.58   # H > 0.58 → trending (TIGHTENED for quality)
+HURST_MEAN_REVERT_THRESHOLD   = 0.35   # H < 0.35 → mean reverting
+# H between 0.42 and 0.58 → random walk (no trade)
 
 # ===========================================================================
 # SIGNAL GENERATION THRESHOLDS

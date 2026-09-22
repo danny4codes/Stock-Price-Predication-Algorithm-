@@ -40,6 +40,8 @@ def initialize_mt5(
     """
     Initialize the MetaTrader 5 terminal connection.
 
+    Tries connecting to an already-running terminal first (no path).
+    Falls back to spawning a new terminal at the given path.
     Retries with exponential backoff on failure.
 
     Args:
@@ -52,6 +54,23 @@ def initialize_mt5(
         True if connected successfully, False after all retries exhausted.
     """
     for attempt in range(MT5_MAX_RETRIES):
+        # Try connecting to an already-running terminal first (no path)
+        initialized = mt5.initialize(
+            path=None,
+            login=login,
+            password=password,
+            server=server,
+            timeout=30_000,
+        )
+        if initialized:
+            info = mt5.terminal_info()
+            logger.info(
+                f"MT5 connected (existing terminal) | Server: {server} | "
+                f"Login: {login} | Build: {info.build if info else 'unknown'}"
+            )
+            return True
+
+        # Fall back to launching a new terminal instance
         initialized = mt5.initialize(
             path=path,
             login=login,
@@ -62,8 +81,8 @@ def initialize_mt5(
         if initialized:
             info = mt5.terminal_info()
             logger.info(
-                f"MT5 connected | Server: {server} | Login: {login} | "
-                f"Build: {info.build if info else 'unknown'}"
+                f"MT5 connected (new terminal) | Server: {server} | "
+                f"Login: {login} | Build: {info.build if info else 'unknown'}"
             )
             return True
 
@@ -364,6 +383,15 @@ ORDER_FILLING_RETURN    = mt5.ORDER_FILLING_RETURN
 ORDER_STATE_STARTED     = mt5.ORDER_STATE_STARTED
 POSITION_TYPE_BUY       = mt5.POSITION_TYPE_BUY
 POSITION_TYPE_SELL      = mt5.POSITION_TYPE_SELL
+
+# Timeframe constants for use by other modules
+TIMEFRAME_M1   = mt5.TIMEFRAME_M1
+TIMEFRAME_M5   = mt5.TIMEFRAME_M5
+TIMEFRAME_M15  = mt5.TIMEFRAME_M15
+TIMEFRAME_M30  = mt5.TIMEFRAME_M30
+TIMEFRAME_H1   = mt5.TIMEFRAME_H1
+TIMEFRAME_H4   = mt5.TIMEFRAME_H4
+TIMEFRAME_D1   = mt5.TIMEFRAME_D1
 
 
 def mt5_last_error() -> tuple:
